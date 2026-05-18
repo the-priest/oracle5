@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Oracle
+Comment=Local AI assistant
+Exec=oracle
+Icon=applications-science
+Terminal=false
+Categories=Utility;Network;
+Keywords=ai;assistant;ollama;chat;
