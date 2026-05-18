@@ -501,6 +501,17 @@ Keywords=ai;assistant;groq;ollama;chat;jarvis;
 StartupWMClass=org.thepriest.kali
 EOF
 update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
+
+# Refresh icon cache so the new dragon icon shows up immediately.
+# Without this, Phosh / GNOME Shell may keep showing the old cached icon
+# until next login.
+HICOLOR_DIR="${HOME}/.local/share/icons/hicolor"
+if [ -d "${HICOLOR_DIR}" ] && command -v gtk-update-icon-cache >/dev/null; then
+  gtk-update-icon-cache -f -t "${HICOLOR_DIR}" 2>/dev/null || true
+fi
+# Touch the desktop entry so file-watchers notice
+touch "${DESKTOP_DIR}/kali.desktop" 2>/dev/null || true
+
 ok "launcher + desktop entry installed"
 
 # ── 9. Groq API key prompt ────────────────────────────────────────

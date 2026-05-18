@@ -101,6 +101,9 @@ for f in "${OPTIONAL[@]}"; do
   [ -f "$f" ] && git add "$f" || true
 done
 
+# Also pick up deletions of any previously-tracked files (e.g. old oracle*).
+git add -u
+
 if git diff --cached --quiet; then
   warn "no staged changes"
   exit 0

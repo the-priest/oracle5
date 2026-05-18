@@ -80,24 +80,24 @@ headerbar {
 /* ===== App branding ===== */
 
 .app-title {
-    font-size: 20px;
+    font-size: 24px;
     font-weight: 900;
     color: #cdd6f4;
     letter-spacing: 0.5px;
 }
 .app-subtitle {
-    font-size: 12px;
+    font-size: 14px;
     color: #6c7086;
     margin-top: 2px;
 }
 
 .chat-title {
-    font-size: 17px;
+    font-size: 20px;
     font-weight: 700;
     color: #cdd6f4;
 }
 .chat-subtitle {
-    font-size: 12px;
+    font-size: 14px;
     color: #7f849c;
 }
 
@@ -106,9 +106,9 @@ headerbar {
 .chat-row {
     background-color: transparent;
     border-radius: 12px;
-    padding: 14px 16px;
-    margin: 3px 8px;
-    min-height: 56px;
+    padding: 16px 18px;
+    margin: 4px 8px;
+    min-height: 64px;
 }
 .chat-row:hover {
     background-color: #1e1e2e;
@@ -119,16 +119,16 @@ headerbar {
 .chat-row .title-line {
     color: #cdd6f4;
     font-weight: 600;
-    font-size: 16px;
+    font-size: 18px;
 }
 .chat-row .meta-line {
     color: #7f849c;
-    font-size: 13px;
-    margin-top: 2px;
+    font-size: 15px;
+    margin-top: 3px;
 }
 .chat-row .pin-icon {
     color: #f9e2af;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 /* ===== Empty states ===== */
@@ -138,15 +138,15 @@ headerbar {
     padding: 60px 32px;
 }
 .empty-state-title {
-    font-size: 22px;
+    font-size: 28px;
     font-weight: 700;
     color: #cdd6f4;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
 }
 .empty-state-body {
-    font-size: 14px;
+    font-size: 18px;
     color: #7f849c;
-    line-height: 1.5;
+    line-height: 1.55;
 }
 
 /* ===== Message bubbles ===== */
@@ -160,29 +160,30 @@ headerbar {
     background-color: #45475a;
     color: #cdd6f4;
     border-radius: 18px 18px 6px 18px;
-    padding: 14px 18px;
-    margin: 4px 12px 4px 80px;
-    font-size: 17px;
+    padding: 16px 20px;
+    margin: 6px 12px 6px 80px;
+    font-size: 20px;
+    line-height: 1.5;
 }
 
 /* Assistant: left-aligned, transparent, larger text */
 .msg-assistant {
     background-color: transparent;
     color: #cdd6f4;
-    padding: 8px 16px;
-    margin: 4px 12px;
-    font-size: 17px;
+    padding: 10px 16px;
+    margin: 6px 12px;
+    font-size: 20px;
     line-height: 1.6;
 }
 
 /* Compact tool indicator (replaces visible JSON dump) */
 .msg-tool-indicator {
-    padding: 2px 16px 2px 60px;
-    margin: 0 12px;
+    padding: 4px 16px 4px 60px;
+    margin: 2px 12px;
 }
 .tool-indicator-label {
     color: #6c7086;
-    font-size: 12px;
+    font-size: 14px;
     font-style: italic;
     opacity: 0.85;
 }
@@ -190,7 +191,7 @@ headerbar {
 .msg-system-notice {
     color: #6c7086;
     font-style: italic;
-    font-size: 13px;
+    font-size: 15px;
     padding: 6px 16px;
     margin: 4px 16px;
 }
@@ -198,11 +199,11 @@ headerbar {
 /* Avatar dots */
 .avatar {
     border-radius: 50%;
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 44px;
+    min-height: 44px;
     background-color: #313244;
     font-weight: bold;
-    font-size: 14px;
+    font-size: 18px;
     color: #cdd6f4;
 }
 .avatar-user {
@@ -217,10 +218,10 @@ headerbar {
 .role-label {
     color: #7f849c;
     font-weight: 700;
-    font-size: 13px;
-    letter-spacing: 0.7px;
+    font-size: 15px;
+    letter-spacing: 0.8px;
     text-transform: uppercase;
-    margin: 0 0 3px 0;
+    margin: 0 0 4px 0;
 }
 .role-label.user { color: #89b4fa; }
 .role-label.kali { color: #cba6f7; }
@@ -247,8 +248,8 @@ headerbar {
     background-color: transparent;
     color: #f5e0dc;
     font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 15px;
-    padding: 12px 14px;
+    font-size: 17px;
+    padding: 14px 16px;
 }
 
 /* ===== Input area ===== */
@@ -256,21 +257,21 @@ headerbar {
 .input-area {
     background-color: #181825;
     border-top: 1px solid #313244;
-    padding: 12px;
+    padding: 14px;
 }
 
 .input-frame {
     background-color: #313244;
-    border-radius: 22px;
-    padding: 6px 8px 6px 16px;
-    min-height: 52px;
+    border-radius: 24px;
+    padding: 8px 10px 8px 18px;
+    min-height: 58px;
 }
 
 .input-frame textview {
     background-color: transparent;
     color: #cdd6f4;
-    font-size: 17px;
-    padding: 8px 0;
+    font-size: 20px;
+    padding: 10px 0;
 }
 
 .send-button {
@@ -293,10 +294,10 @@ headerbar {
 .icon-button {
     background-color: transparent;
     color: #a6adc8;
-    border-radius: 10px;
-    padding: 8px;
-    min-width: 40px;
-    min-height: 40px;
+    border-radius: 12px;
+    padding: 10px;
+    min-width: 48px;
+    min-height: 48px;
 }
 .icon-button:hover {
     background-color: #313244;
@@ -315,9 +316,9 @@ headerbar {
 .status-pill {
     background-color: #313244;
     color: #a6adc8;
-    border-radius: 14px;
-    padding: 4px 12px;
-    font-size: 11px;
+    border-radius: 16px;
+    padding: 6px 14px;
+    font-size: 13px;
     font-weight: bold;
     letter-spacing: 0.5px;
 }
@@ -333,7 +334,7 @@ headerbar {
 .settings-section-title {
     color: #cba6f7;
     font-weight: bold;
-    font-size: 12px;
+    font-size: 14px;
     text-transform: uppercase;
     letter-spacing: 1px;
     margin: 16px 4px 6px 4px;
@@ -345,18 +346,21 @@ headerbar {
     background-color: #11111b;
     color: #f9e2af;
     font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    padding: 12px;
+    font-size: 16px;
+    padding: 14px;
     border-radius: 10px;
     margin: 10px 0;
 }
 
-/* ===== Scrollbar ===== */
+/* ===== Scrollbar -- wider for touch ===== */
 
 scrollbar slider {
-    background-color: #45475a;
-    border-radius: 4px;
-    min-width: 7px;
+    background-color: #585b70;
+    border-radius: 6px;
+    min-width: 12px;
+    min-height: 40px;
+}
+scrollbar slider:hover { background-color: #6c7086; }
 }
 scrollbar slider:hover { background-color: #585b70; }
 
@@ -366,9 +370,9 @@ entry {
     background-color: #313244;
     color: #cdd6f4;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 10px 14px;
     border: none;
-    font-size: 14px;
+    font-size: 17px;
 }
 entry:focus-within { outline: 2px solid #cba6f7; }
 
@@ -376,9 +380,9 @@ passwordentry {
     background-color: #313244;
     color: #cdd6f4;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 10px 14px;
     border: none;
-    font-size: 14px;
+    font-size: 17px;
 }
 
 /* ===== Quick-action chips in empty state ===== */
@@ -386,9 +390,9 @@ passwordentry {
 .quick-chip {
     background-color: #313244;
     color: #cdd6f4;
-    border-radius: 16px;
-    padding: 10px 16px;
-    font-size: 13px;
+    border-radius: 18px;
+    padding: 12px 20px;
+    font-size: 16px;
     min-height: 40px;
 }
 .quick-chip:hover {
@@ -533,7 +537,7 @@ class Avatar(Gtk.Label):
             self.set_text("K")
             self.add_css_class("avatar-kali")
         self.set_valign(Gtk.Align.START)
-        self.set_size_request(32, 32)
+        self.set_size_request(44, 44)
 
 
 class MessageWidget(Gtk.Box):
@@ -649,7 +653,9 @@ class MessageWidget(Gtk.Box):
                 lbl.set_wrap(True)
                 lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
                 lbl.set_xalign(0.0)
-                lbl.set_selectable(True)
+                # NOT selectable — selectable labels swallow touch swipes
+                # and break message-list scrolling.  Code blocks have a
+                # copy button; prose can be copied via long-press menu.
                 try:
                     lbl.set_markup(text_to_pango(b["content"]))
                 except Exception:
@@ -666,7 +672,7 @@ class MessageWidget(Gtk.Box):
         self._streaming_label.set_wrap(True)
         self._streaming_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
         self._streaming_label.set_xalign(0.0)
-        self._streaming_label.set_selectable(True)
+        # NOT selectable — see comment in set_content
         self._streaming_label.set_text("")
         self._blocks_container.append(self._streaming_label)
         self._content = ""
@@ -1238,6 +1244,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.msg_scroll.set_policy(Gtk.PolicyType.NEVER,
                                     Gtk.PolicyType.AUTOMATIC)
         self.msg_scroll.set_vexpand(True)
+        # Force kinetic (swipe) scrolling — needed for phone touch input
+        self.msg_scroll.set_kinetic_scrolling(True)
+        self.msg_scroll.set_overlay_scrolling(True)
         self.msg_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.msg_box.set_margin_top(12)
         self.msg_box.set_margin_bottom(12)

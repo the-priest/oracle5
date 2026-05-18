@@ -1365,8 +1365,16 @@ def format_scan_for_chat(scan: Dict[str, Any]) -> str:
 # TOOL CALL PARSING
 # ═════════════════════════════════════════════════════════════════════
 
+# Permissive matcher: accepts <tool name="X">{json}</tool>,
+# <tool>{json with "name" or "tool" key}</tool>, OR an unnamed <tool>
+# whose JSON contains "cmd"/"command" (default to "run").
 TOOL_TAG_RE = re.compile(
-    r'<tool\s+name="([a-zA-Z_]+)"\s*>(.*?)</tool>', re.DOTALL)
+    r'<tool(?:\s+name="([a-zA-Z_]+)")?\s*>(.*?)</tool>',
+    re.DOTALL | re.IGNORECASE)
+
+# Also strip stray <tool> openings that never closed (mid-stream artefacts)
+TOOL_PARTIAL_RE = re.compile(r'<tool(?:\s[^>]*)?>\s*\{?[^<]*$',
+                              re.DOTALL | re.IGNORECASE)
 
 
 @dataclass
@@ -1377,20 +1385,56 @@ class ToolCall:
 
 
 def parse_tool_calls(text: str) -> List[ToolCall]:
-    calls = []
+    calls: List[ToolCall] = []
     for m in TOOL_TAG_RE.finditer(text):
-        name = m.group(1)
+        name_attr = m.group(1)
         body = m.group(2).strip()
         try:
-            args = json.loads(body) if body else {}
+            parsed = json.loads(body) if body else {}
         except json.JSONDecodeError:
-            args = {"_raw": body}
+            parsed = {"_raw": body}
+
+        # Resolve tool name
+        name = name_attr
+        if not name and isinstance(parsed, dict):
+            for key in ("name", "tool", "tool_name"):
+                if key in parsed:
+                    name = parsed.pop(key)
+                    break
+        # Unwrap common nested arg containers
+        if isinstance(parsed, dict):
+            for inner_key in ("arguments", "args", "parameters", "params"):
+                if isinstance(parsed.get(inner_key), dict):
+                    parsed = parsed[inner_key]
+                    break
+        # Default-to-run when there's a cmd/command and no name
+        if not name and isinstance(parsed, dict) and (
+                "cmd" in parsed or "command" in parsed):
+            name = "run"
+        # Normalize cmd → command (and lists → joined string)
+        if isinstance(parsed, dict) and "cmd" in parsed and "command" not in parsed:
+            v = parsed.pop("cmd")
+            parsed["command"] = " ".join(v) if isinstance(v, list) else str(v)
+        # Normalize reason aliases
+        if isinstance(parsed, dict):
+            for alt in ("why", "rationale", "purpose"):
+                if alt in parsed and "reason" not in parsed:
+                    parsed["reason"] = parsed.pop(alt)
+
+        if not name:
+            # Couldn't figure out what tool this was — skip; the matched
+            # text still gets stripped from display by strip_tool_calls.
+            continue
+        args = parsed if isinstance(parsed, dict) else {"_raw": parsed}
         calls.append(ToolCall(name=name, args=args, raw=m.group(0)))
     return calls
 
 
 def strip_tool_calls(text: str) -> str:
-    return TOOL_TAG_RE.sub("", text).strip()
+    out = TOOL_TAG_RE.sub("", text)
+    # Also remove dangling unclosed <tool ...> ... fragments mid-stream
+    out = TOOL_PARTIAL_RE.sub("", out)
+    return out.strip()
 
 
 # ═════════════════════════════════════════════════════════════════════
