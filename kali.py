@@ -80,24 +80,24 @@ headerbar {
 /* ===== App branding ===== */
 
 .app-title {
-    font-size: 24px;
+    font-size: 28px;
     font-weight: 900;
     color: #cdd6f4;
     letter-spacing: 0.5px;
 }
 .app-subtitle {
-    font-size: 14px;
+    font-size: 16px;
     color: #6c7086;
     margin-top: 2px;
 }
 
 .chat-title {
-    font-size: 20px;
+    font-size: 24px;
     font-weight: 700;
     color: #cdd6f4;
 }
 .chat-subtitle {
-    font-size: 14px;
+    font-size: 16px;
     color: #7f849c;
 }
 
@@ -105,10 +105,10 @@ headerbar {
 
 .chat-row {
     background-color: transparent;
-    border-radius: 12px;
-    padding: 16px 18px;
-    margin: 4px 8px;
-    min-height: 64px;
+    border-radius: 14px;
+    padding: 20px 22px;
+    margin: 6px 8px;
+    min-height: 76px;
 }
 .chat-row:hover {
     background-color: #1e1e2e;
@@ -119,16 +119,16 @@ headerbar {
 .chat-row .title-line {
     color: #cdd6f4;
     font-weight: 600;
-    font-size: 18px;
+    font-size: 22px;
 }
 .chat-row .meta-line {
     color: #7f849c;
-    font-size: 15px;
-    margin-top: 3px;
+    font-size: 17px;
+    margin-top: 4px;
 }
 .chat-row .pin-icon {
     color: #f9e2af;
-    font-size: 14px;
+    font-size: 17px;
 }
 
 /* ===== Empty states ===== */
@@ -138,13 +138,13 @@ headerbar {
     padding: 60px 32px;
 }
 .empty-state-title {
-    font-size: 28px;
+    font-size: 34px;
     font-weight: 700;
     color: #cdd6f4;
-    margin-bottom: 14px;
+    margin-bottom: 18px;
 }
 .empty-state-body {
-    font-size: 18px;
+    font-size: 22px;
     color: #7f849c;
     line-height: 1.55;
 }
@@ -159,31 +159,31 @@ headerbar {
 .msg-user {
     background-color: #45475a;
     color: #cdd6f4;
-    border-radius: 18px 18px 6px 18px;
-    padding: 16px 20px;
-    margin: 6px 12px 6px 80px;
-    font-size: 20px;
-    line-height: 1.5;
+    border-radius: 22px 22px 8px 22px;
+    padding: 18px 22px;
+    margin: 8px 12px 8px 60px;
+    font-size: 26px;
+    line-height: 1.45;
 }
 
 /* Assistant: left-aligned, transparent, larger text */
 .msg-assistant {
     background-color: transparent;
     color: #cdd6f4;
-    padding: 10px 16px;
-    margin: 6px 12px;
-    font-size: 20px;
-    line-height: 1.6;
+    padding: 12px 18px;
+    margin: 8px 12px;
+    font-size: 26px;
+    line-height: 1.55;
 }
 
 /* Compact tool indicator (replaces visible JSON dump) */
 .msg-tool-indicator {
-    padding: 4px 16px 4px 60px;
+    padding: 6px 16px 6px 70px;
     margin: 2px 12px;
 }
 .tool-indicator-label {
     color: #6c7086;
-    font-size: 14px;
+    font-size: 17px;
     font-style: italic;
     opacity: 0.85;
 }
@@ -191,19 +191,19 @@ headerbar {
 .msg-system-notice {
     color: #6c7086;
     font-style: italic;
-    font-size: 15px;
-    padding: 6px 16px;
+    font-size: 18px;
+    padding: 8px 16px;
     margin: 4px 16px;
 }
 
 /* Avatar dots */
 .avatar {
     border-radius: 50%;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: 52px;
+    min-height: 52px;
     background-color: #313244;
     font-weight: bold;
-    font-size: 18px;
+    font-size: 22px;
     color: #cdd6f4;
 }
 .avatar-user {
@@ -218,10 +218,10 @@ headerbar {
 .role-label {
     color: #7f849c;
     font-weight: 700;
-    font-size: 15px;
+    font-size: 17px;
     letter-spacing: 0.8px;
     text-transform: uppercase;
-    margin: 0 0 4px 0;
+    margin: 0 0 5px 0;
 }
 .role-label.user { color: #89b4fa; }
 .role-label.kali { color: #cba6f7; }
@@ -248,8 +248,8 @@ headerbar {
     background-color: transparent;
     color: #f5e0dc;
     font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 17px;
-    padding: 14px 16px;
+    font-size: 22px;
+    padding: 16px 18px;
 }
 
 /* ===== Input area ===== */
@@ -257,29 +257,29 @@ headerbar {
 .input-area {
     background-color: #181825;
     border-top: 1px solid #313244;
-    padding: 14px;
+    padding: 16px;
 }
 
 .input-frame {
     background-color: #313244;
-    border-radius: 24px;
-    padding: 8px 10px 8px 18px;
-    min-height: 58px;
+    border-radius: 28px;
+    padding: 10px 12px 10px 22px;
+    min-height: 68px;
 }
 
 .input-frame textview {
     background-color: transparent;
     color: #cdd6f4;
-    font-size: 20px;
-    padding: 10px 0;
+    font-size: 26px;
+    padding: 12px 0;
 }
 
 .send-button {
     background: linear-gradient(135deg, #cba6f7, #f5c2e7);
     color: #1e1e2e;
-    border-radius: 18px;
-    min-width: 40px;
-    min-height: 40px;
+    border-radius: 22px;
+    min-width: 52px;
+    min-height: 52px;
     padding: 0;
     font-weight: bold;
 }
@@ -294,10 +294,10 @@ headerbar {
 .icon-button {
     background-color: transparent;
     color: #a6adc8;
-    border-radius: 12px;
-    padding: 10px;
-    min-width: 48px;
-    min-height: 48px;
+    border-radius: 14px;
+    padding: 12px;
+    min-width: 56px;
+    min-height: 56px;
 }
 .icon-button:hover {
     background-color: #313244;
@@ -316,9 +316,9 @@ headerbar {
 .status-pill {
     background-color: #313244;
     color: #a6adc8;
-    border-radius: 16px;
-    padding: 6px 14px;
-    font-size: 13px;
+    border-radius: 18px;
+    padding: 8px 16px;
+    font-size: 16px;
     font-weight: bold;
     letter-spacing: 0.5px;
 }
@@ -334,7 +334,7 @@ headerbar {
 .settings-section-title {
     color: #cba6f7;
     font-weight: bold;
-    font-size: 14px;
+    font-size: 17px;
     text-transform: uppercase;
     letter-spacing: 1px;
     margin: 16px 4px 6px 4px;
@@ -346,9 +346,9 @@ headerbar {
     background-color: #11111b;
     color: #f9e2af;
     font-family: 'JetBrains Mono', monospace;
-    font-size: 16px;
-    padding: 14px;
-    border-radius: 10px;
+    font-size: 20px;
+    padding: 16px;
+    border-radius: 12px;
     margin: 10px 0;
 }
 
@@ -356,9 +356,9 @@ headerbar {
 
 scrollbar slider {
     background-color: #585b70;
-    border-radius: 6px;
-    min-width: 12px;
-    min-height: 40px;
+    border-radius: 8px;
+    min-width: 16px;
+    min-height: 50px;
 }
 scrollbar slider:hover { background-color: #6c7086; }
 }
@@ -369,20 +369,20 @@ scrollbar slider:hover { background-color: #585b70; }
 entry {
     background-color: #313244;
     color: #cdd6f4;
-    border-radius: 10px;
-    padding: 10px 14px;
+    border-radius: 12px;
+    padding: 12px 16px;
     border: none;
-    font-size: 17px;
+    font-size: 20px;
 }
 entry:focus-within { outline: 2px solid #cba6f7; }
 
 passwordentry {
     background-color: #313244;
     color: #cdd6f4;
-    border-radius: 10px;
-    padding: 10px 14px;
+    border-radius: 12px;
+    padding: 12px 16px;
     border: none;
-    font-size: 17px;
+    font-size: 20px;
 }
 
 /* ===== Quick-action chips in empty state ===== */
@@ -390,9 +390,9 @@ passwordentry {
 .quick-chip {
     background-color: #313244;
     color: #cdd6f4;
-    border-radius: 18px;
-    padding: 12px 20px;
-    font-size: 16px;
+    border-radius: 22px;
+    padding: 14px 24px;
+    font-size: 19px;
     min-height: 40px;
 }
 .quick-chip:hover {
@@ -404,12 +404,12 @@ passwordentry {
 
 .watcher-banner {
     background-color: #11111b;
-    border-left: 3px solid #f9e2af;
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin: 6px 16px;
+    border-left: 4px solid #f9e2af;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 8px 16px;
     color: #f9e2af;
-    font-size: 12px;
+    font-size: 17px;
 }
 """
 
@@ -537,7 +537,7 @@ class Avatar(Gtk.Label):
             self.set_text("K")
             self.add_css_class("avatar-kali")
         self.set_valign(Gtk.Align.START)
-        self.set_size_request(44, 44)
+        self.set_size_request(52, 52)
 
 
 class MessageWidget(Gtk.Box):

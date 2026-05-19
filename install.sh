@@ -462,15 +462,77 @@ ok "incoming files parse cleanly"
 for f in "${REQUIRED_FILES[@]}"; do
   cp "${SRC_DIR}/${f}" "${INSTALL_DIR}/${f}"
 done
-for f in "${OPTIONAL_FILES[@]}"; do
-  if [ -f "${SRC_DIR}/${f}" ]; then
-    cp "${SRC_DIR}/${f}" "${INSTALL_DIR}/${f}"
-    if [ "${f}" = "kali-dragon.svg" ]; then
-      cp "${SRC_DIR}/${f}" "${ICON_DIR}/${f}"
-    fi
-  fi
-done
+# (kali-dragon.svg is installed below from an inline heredoc — guaranteed)
 ok "code installed at ${INSTALL_DIR}"
+
+# ── 7b. Install the icon (INLINE — guaranteed to exist) ───────────
+
+step "icon"
+
+# Wipe any cached/old icon files first.  Phosh/GTK aggressively cache
+# icons; if we don't remove these, the user sees the old icon forever.
+rm -f "${INSTALL_DIR}/kali-dragon.svg" 2>/dev/null || true
+for sz in scalable 16x16 22x22 24x24 32x32 48x48 64x64 96x96 128x128 256x256 512x512; do
+  rm -f "${HOME}/.local/share/icons/hicolor/${sz}/apps/kali-dragon.svg" 2>/dev/null || true
+  rm -f "${HOME}/.local/share/icons/hicolor/${sz}/apps/kali-dragon.png" 2>/dev/null || true
+done
+
+# Write the dragon SVG from an inlined heredoc.  This means the icon
+# is ALWAYS installed — no dependency on a successful GitHub fetch.
+write_dragon_svg() {
+  local target="$1"
+  mkdir -p "$(dirname "${target}")"
+  cat > "${target}" <<'KALI_DRAGON_SVG_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" fill="#000000"/>
+  <g fill="#ffffff" fill-rule="evenodd">
+    <polygon points="128,10 118,40 138,40"/>
+    <path d="M 118,40 L 88,32 L 78,42 L 62,34 L 54,46 L 38,38 L 30,52
+             L 18,46 L 14,64 L 26,68 L 18,78 L 32,82 L 26,92 L 42,94
+             L 38,104 L 54,102 L 52,114 L 70,108 L 80,98 L 92,84
+             L 102,70 L 114,58 Z"/>
+    <path d="M 138,40 L 168,32 L 178,42 L 194,34 L 202,46 L 218,38 L 226,52
+             L 238,46 L 242,64 L 230,68 L 238,78 L 224,82 L 230,92 L 214,94
+             L 218,104 L 202,102 L 204,114 L 186,108 L 176,98 L 164,84
+             L 154,70 L 142,58 Z"/>
+    <path d="M 84,96 L 70,112 L 78,118 L 88,108 L 92,116 L 100,104 L 96,92 Z"/>
+    <path d="M 172,96 L 186,112 L 178,118 L 168,108 L 164,116 L 156,104 L 160,92 Z"/>
+    <path d="M 58,118 L 42,138 L 50,148 L 36,154 L 50,164 L 42,176 L 58,170
+             L 56,184 L 70,170 L 66,154 L 74,140 L 70,128 Z"/>
+    <path d="M 198,118 L 214,138 L 206,148 L 220,154 L 206,164 L 214,176
+             L 198,170 L 200,184 L 186,170 L 190,154 L 182,140 L 186,128 Z"/>
+    <path d="M 100,70 L 156,70 L 168,98 L 168,114 L 158,132 L 128,148
+             L 98,132 L 88,114 L 88,98 Z"/>
+    <polygon fill="#000000" points="128,82 120,98 128,114 136,98"/>
+    <path fill="#000000" d="M 100,110 L 118,118 L 118,124 L 112,124 L 100,118 Z"/>
+    <path fill="#000000" d="M 156,110 L 138,118 L 138,124 L 144,124 L 156,118 Z"/>
+    <path d="M 80,118 L 68,134 L 76,146 L 90,140 L 96,128 L 90,120 Z"/>
+    <path d="M 176,118 L 188,134 L 180,146 L 166,140 L 160,128 L 166,120 Z"/>
+    <path d="M 96,140 L 160,140 L 156,168 L 144,180 L 128,186 L 112,180 L 100,168 Z"/>
+    <path fill="#000000" d="M 114,160 L 142,160 L 138,172 L 128,178 L 118,172 Z"/>
+    <polygon points="76,146 64,186 80,176 86,154"/>
+    <polygon points="92,166 86,196 100,184 102,168"/>
+    <polygon points="180,146 192,186 176,176 170,154"/>
+    <polygon points="164,166 170,196 156,184 154,168"/>
+    <path d="M 110,180 L 100,210 L 114,200 L 118,212 L 122,196 L 128,214
+             L 134,196 L 138,212 L 142,200 L 156,210 L 146,180 L 138,184
+             L 128,186 L 118,184 Z"/>
+    <polygon points="124,196 128,232 132,196"/>
+  </g>
+</svg>
+KALI_DRAGON_SVG_EOF
+}
+
+write_dragon_svg "${INSTALL_DIR}/kali-dragon.svg"
+write_dragon_svg "${ICON_DIR}/kali-dragon.svg"
+
+# Sanity check: SVG file exists and isn't empty
+if [ ! -s "${ICON_DIR}/kali-dragon.svg" ]; then
+  err "icon write failed — kali-dragon.svg is missing or empty in ${ICON_DIR}"
+else
+  ok "icon installed at ${ICON_DIR}/kali-dragon.svg"
+fi
 
 # ── 8. Launcher + desktop ─────────────────────────────────────────
 
@@ -481,12 +543,9 @@ exec python3 kali.py "\$@"
 EOF
 chmod +x "${BIN_DIR}/kali"
 
-# Use the dragon SVG if it was installed
-ICON_VALUE="applications-science"
-if [ -f "${INSTALL_DIR}/kali-dragon.svg" ]; then
-  ICON_VALUE="${INSTALL_DIR}/kali-dragon.svg"
-fi
-
+# Icon name reference (theme lookup), NOT absolute path.  GTK/Phosh's
+# icon cache works on theme names; using an absolute path bypasses the
+# cache and is much less reliable.
 cat > "${DESKTOP_DIR}/kali.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -494,7 +553,7 @@ Name=Kali
 GenericName=AI Assistant
 Comment=Local, loyal AI assistant with full OS access
 Exec=${BIN_DIR}/kali
-Icon=${ICON_VALUE}
+Icon=kali-dragon
 Terminal=false
 Categories=Utility;Network;Development;
 Keywords=ai;assistant;groq;ollama;chat;jarvis;
@@ -502,14 +561,16 @@ StartupWMClass=org.thepriest.kali
 EOF
 update-desktop-database "${DESKTOP_DIR}" 2>/dev/null || true
 
-# Refresh icon cache so the new dragon icon shows up immediately.
-# Without this, Phosh / GNOME Shell may keep showing the old cached icon
-# until next login.
+# Force-refresh icon caches so the new dragon shows up immediately.
 HICOLOR_DIR="${HOME}/.local/share/icons/hicolor"
-if [ -d "${HICOLOR_DIR}" ] && command -v gtk-update-icon-cache >/dev/null; then
+if command -v gtk-update-icon-cache >/dev/null; then
   gtk-update-icon-cache -f -t "${HICOLOR_DIR}" 2>/dev/null || true
 fi
-# Touch the desktop entry so file-watchers notice
+# Bust GTK's pixmap cache too (some Phosh builds keep a separate one)
+rm -f "${HOME}/.cache/icon-cache.kcache" 2>/dev/null || true
+rm -rf "${HOME}/.cache/thumbnails/normal" 2>/dev/null || true
+
+# Touch the desktop entry so file-watchers / Phosh re-scan it
 touch "${DESKTOP_DIR}/kali.desktop" 2>/dev/null || true
 
 ok "launcher + desktop entry installed"
@@ -627,6 +688,11 @@ step "done in $(elapsed)s"
 echo
 echo "  Open your app grid → click ${G}Kali${X}"
 echo "  Or from terminal:  ${G}kali${X}"
+echo
+echo "  ${Y}If the icon looks wrong (old/missing/generic):${X}"
+echo "    Phosh caches icons aggressively.  Force it to reload:"
+echo "      ${G}killall phosh${X}     # (it respawns automatically)"
+echo "    or log out and back in."
 echo
 
 if ! echo ":${PATH}:" | grep -q ":${BIN_DIR}:"; then

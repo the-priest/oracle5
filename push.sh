@@ -94,6 +94,14 @@ if [ -z "$MSG" ]; then
 fi
 
 # ── stage ───────────────────────────────────────────────────────
+
+# Make sure shell scripts are executable BEFORE staging.  Git tracks
+# the executable bit; setting it here means anyone who clones the repo
+# (or re-copies files in) gets working scripts without needing chmod.
+for f in install.sh push.sh; do
+  [ -f "$f" ] && chmod +x "$f"
+done
+
 for f in "${REQUIRED[@]}"; do
   git add "$f"
 done
@@ -101,8 +109,13 @@ for f in "${OPTIONAL[@]}"; do
   [ -f "$f" ] && git add "$f" || true
 done
 
-# Also pick up deletions of any previously-tracked files (e.g. old oracle*).
+# Pick up deletions of any previously-tracked files (e.g. old oracle*).
 git add -u
+
+# Also explicitly tell git these scripts are executable, in case the
+# bit got stripped by a cp from another filesystem before staging.
+git update-index --chmod=+x install.sh 2>/dev/null || true
+git update-index --chmod=+x push.sh    2>/dev/null || true
 
 if git diff --cached --quiet; then
   warn "no staged changes"
