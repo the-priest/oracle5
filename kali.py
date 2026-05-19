@@ -537,7 +537,8 @@ class Avatar(Gtk.Label):
             self.set_text("K")
             self.add_css_class("avatar-kali")
         self.set_valign(Gtk.Align.START)
-        self.set_size_request(52, 52)
+        size = _scaled(52, floor=28)
+        self.set_size_request(size, size)
 
 
 class MessageWidget(Gtk.Box):
@@ -978,7 +979,7 @@ class SettingsDialog(Adw.PreferencesDialog):
         sp_card.set_margin_top(8)
         sp_card.set_margin_bottom(8)
         sp_sw = Gtk.ScrolledWindow()
-        sp_sw.set_min_content_height(200)
+        sp_sw.set_min_content_height(_scaled(200, floor=140))
         sp_sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.sp_view = Gtk.TextView()
         self.sp_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -1094,12 +1095,31 @@ class MainWindow(Adw.ApplicationWindow):
         self.streaming_cancel: Optional[threading.Event] = None
         self.streaming_msg_widget: Optional[MessageWidget] = None
         self.streaming_msg_db_id: Optional[int] = None
+        # Chat the active streaming/tool turn belongs to.  Used so that
+        # if the user navigates to a different chat mid-turn, tool results
+        # and follow-up assistant messages still land in the chat that
+        # started the turn — not whichever chat happens to be displayed
+        # when the background work completes.
+        self.streaming_chat_id: Optional[int] = None
+        self._tool_chain_depth: int = 0
 
         self._build_ui()
         self._wire_actions()
         self._boot()
-        GLib.idle_add(self._new_chat)
+        GLib.idle_add(self._initial_chat_load)
         GLib.idle_add(self._refresh_sidebar)
+
+    def _initial_chat_load(self):
+        """At launch, open the most recent chat if any exist; otherwise
+        start with a fresh one.  Previously we always called _new_chat
+        which spawned an empty 'New chat' every single launch — the
+        sidebar filled up with placeholders over time."""
+        chats = self.store.list_chats(limit=1)
+        if chats:
+            self._load_chat(chats[0].id)
+        else:
+            self._new_chat()
+        return False
 
     # ── boot ────────────────────────────────────────────────────
 
@@ -1311,8 +1331,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         in_scroll = Gtk.ScrolledWindow()
         in_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        in_scroll.set_min_content_height(40)
-        in_scroll.set_max_content_height(220)
+        in_scroll.set_min_content_height(_scaled(40, floor=28))
+        in_scroll.set_max_content_height(_scaled(220, floor=120))
         in_scroll.set_propagate_natural_height(True)
         in_scroll.set_hexpand(True)
 
@@ -1404,7 +1424,8 @@ class MainWindow(Adw.ApplicationWindow):
             ql = query.lower()
             chats = [c for c in chats if ql in c.title.lower()]
         if not chats:
-            empty = Gtk.Label(label="No chats yet.")
+            empty = Gtk.Label(
+                label="No matches." if query else "No chats yet.")
             empty.add_css_class("empty-state")
             self.chat_listbox.append(empty)
             return False
@@ -1484,14 +1505,20 @@ class MainWindow(Adw.ApplicationWindow):
             self._show_empty_state()
         else:
             for m in msgs:
+                kind = (m.meta or {}).get("kind")
                 # Skip stored tool-result rows entirely; the assistant's
                 # follow-up message already conveys their content.
-                kind = (m.meta or {}).get("kind")
                 if kind == "tool_result":
+                    continue
+                # Skip empty assistant placeholders — these are pre-allocated
+                # DB rows for in-flight streams.  Rendering them produces an
+                # empty bubble; the real content arrives when the stream
+                # completes and updates this row.
+                if m.role == "assistant" and not m.content.strip():
                     continue
                 self._append_message_widget(m.role, m.content, m.meta)
 
-        GLib.idle_add(self._scroll_to_bottom)
+        GLib.idle_add(self._force_scroll_to_bottom)
 
     def _show_empty_state(self):
         wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
@@ -1550,12 +1577,32 @@ class MainWindow(Adw.ApplicationWindow):
             self.msg_box.remove(first)
         w = MessageWidget(role, content, meta)
         self.msg_box.append(w)
-        GLib.idle_add(self._scroll_to_bottom)
+        # New message → force scroll.  This is when the user sent something
+        # or a new assistant turn started; they want to see it.  Mid-stream
+        # token updates use the smart _scroll_to_bottom that respects
+        # the user reading history above.
+        GLib.idle_add(self._force_scroll_to_bottom)
         return w
 
     def _scroll_to_bottom(self):
         adj = self.msg_scroll.get_vadjustment()
-        adj.set_value(adj.get_upper())
+        if adj is None:
+            return False
+        # If the user has scrolled UP to read earlier messages, don't
+        # yank them back to the bottom on every token.  Only follow if
+        # they're already within ~120 px of the bottom.
+        at_bottom = (adj.get_value() + adj.get_page_size()
+                     >= adj.get_upper() - 120)
+        if at_bottom:
+            adj.set_value(adj.get_upper())
+        return False
+
+    def _force_scroll_to_bottom(self):
+        """Unconditional scroll — used when sending a NEW user message
+        or loading a chat, where the user expects to see the latest."""
+        adj = self.msg_scroll.get_vadjustment()
+        if adj is not None:
+            adj.set_value(adj.get_upper())
         return False
 
     # ── sending ─────────────────────────────────────────────────
@@ -1569,7 +1616,7 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _send_user_message(self):
-        if self.streaming_thread and self.streaming_thread.is_alive():
+        if self._is_busy():
             self._show_toast("Already replying — wait.")
             return
         buf = self.input_view.get_buffer()
@@ -1581,15 +1628,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         if self.current_chat_id is None:
             self._new_chat()
-        self.store.add_message(self.current_chat_id, "user", text)
+        cid = self.current_chat_id
+        self.store.add_message(cid, "user", text)
         self._append_message_widget("user", text)
-
-        msgs = self.store.list_messages(self.current_chat_id)
-        if sum(1 for m in msgs if m.role == "user") == 1:
-            title = title_from_first_message(text)
-            self.store.rename_chat(self.current_chat_id, title)
-            self.chat_title_lbl.set_text(title)
-            self._refresh_sidebar()
+        self._maybe_set_title_from_first(cid, text)
 
         self._kick_assistant_turn()
 
@@ -1597,18 +1639,48 @@ class MainWindow(Adw.ApplicationWindow):
         if not self.ollama.is_running() and not self.groq.is_available():
             self._show_toast(
                 "No backend.  Set a Groq key in Settings, or start Ollama.")
+            self.send_btn.set_sensitive(True)
+            self.streaming_chat_id = None
+            self._tool_chain_depth = 0
             return
 
-        history = self._build_history_for_model()
+        # Preserve streaming_chat_id across a tool chain.  Only snapshot
+        # when starting a fresh turn (not continuing from a tool result).
+        if self.streaming_chat_id is None:
+            self.streaming_chat_id = self.current_chat_id
+            self._tool_chain_depth = 0
+
+        # Safety: limit how many tool calls can chain in a row to keep a
+        # buggy model from spinning forever.
+        self._tool_chain_depth += 1
+        if self._tool_chain_depth > 8:
+            self._show_toast("Tool chain too long — stopping.")
+            self.streaming_chat_id = None
+            self._tool_chain_depth = 0
+            self.send_btn.set_sensitive(True)
+            return
+
+        chat_id = self.streaming_chat_id
+
+        history = self._build_history_for_model(chat_id)
         sysprompt = build_system_prompt(
             agent_mode=self.current_agent_mode,
             custom_addendum=self.settings.get("system_prompt", ""))
         full = assemble_messages(sysprompt, history)
 
-        self.streaming_msg_widget = self._append_message_widget("assistant", "")
-        self.streaming_msg_widget.start_streaming()
+        # Only show the streaming widget if user is looking at this chat
+        if chat_id == self.current_chat_id:
+            self.streaming_msg_widget = self._append_message_widget(
+                "assistant", "")
+            self.streaming_msg_widget.start_streaming()
+        else:
+            # User has navigated away.  We still need a widget to buffer
+            # tokens for finish_streaming, but don't attach it to msg_box.
+            self.streaming_msg_widget = MessageWidget("assistant", "")
+            self.streaming_msg_widget.start_streaming()
+
         self.streaming_msg_db_id = self.store.add_message(
-            self.current_chat_id, "assistant", "")
+            chat_id, "assistant", "")
 
         self.streaming_cancel = threading.Event()
 
@@ -1630,45 +1702,71 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_stream_token(self, tok):
         if self.streaming_msg_widget:
             self.streaming_msg_widget.append_streaming(tok)
-            self._scroll_to_bottom()
+            # Only scroll if user is on the chat that owns this stream
+            if self.streaming_chat_id == self.current_chat_id:
+                self._scroll_to_bottom()
         return False
 
     def _on_stream_done(self, meta):
-        self.send_btn.set_sensitive(True)
         if not self.streaming_msg_widget:
+            self.send_btn.set_sensitive(True)
+            self.streaming_chat_id = None
+            self._tool_chain_depth = 0
             return False
         final = self.streaming_msg_widget.finish_streaming()
         if self.streaming_msg_db_id:
             self.store.update_message(self.streaming_msg_db_id, final)
         calls = parse_tool_calls(final)
-        if calls and not meta.get("cancelled"):
+        # Honour the agent-mode toggle.  If the user turned it off,
+        # don't execute even if the model emitted a tool tag.
+        if calls and not meta.get("cancelled") and self.current_agent_mode:
+            # Keep send disabled — the tool will fire another turn
             self._execute_tool_calls(calls)
         else:
             self.streaming_msg_widget = None
             self.streaming_msg_db_id = None
+            self.streaming_chat_id = None
+            self._tool_chain_depth = 0
+            self.send_btn.set_sensitive(True)
         return False
 
     def _on_stream_error(self, err):
         self.send_btn.set_sensitive(True)
         if self.streaming_msg_widget:
-            self.streaming_msg_widget.set_content(f"_(error: {err})_")
+            # Preserve any tokens that already streamed in.  Wiping the
+            # widget and replacing with just the error text discards
+            # potentially useful partial output (an explanation that got
+            # cut off, a half-finished tool call, etc).
+            partial = self.streaming_msg_widget._content or ""
+            sep = "\n\n" if partial.strip() else ""
+            final_text = f"{partial}{sep}_(error: {err})_"
+            self.streaming_msg_widget.set_content(final_text)
             if self.streaming_msg_db_id:
                 self.store.update_message(self.streaming_msg_db_id,
-                                          f"_(error: {err})_")
+                                          final_text)
         self._show_toast(f"Error: {err}")
         self.streaming_msg_widget = None
         self.streaming_msg_db_id = None
+        self.streaming_chat_id = None
+        self._tool_chain_depth = 0
         return False
 
     # ── tool execution ──────────────────────────────────────────
 
     def _execute_tool_calls(self, calls):
         call = calls[0]
-        self._append_message_widget(
-            "tool",
-            f"used {call.name}",
-            meta={"kind": "call", "tool_name": call.name})
-        self.store.add_message(self.current_chat_id, "tool",
+        # Always write to the chat this turn was started in, not whichever
+        # one the user might have navigated to.
+        chat_id = self.streaming_chat_id or self.current_chat_id
+
+        # UI: only render the indicator if user is still looking at this chat
+        if chat_id == self.current_chat_id:
+            self._append_message_widget(
+                "tool",
+                f"used {call.name}",
+                meta={"kind": "call", "tool_name": call.name})
+
+        self.store.add_message(chat_id, "tool",
                                 f"⚙ tool: {call.name}({json.dumps(call.args)})",
                                 meta={"kind": "call"})
 
@@ -1702,13 +1800,14 @@ class MainWindow(Adw.ApplicationWindow):
             self._feed_tool_result(f"Unknown tool '{call.name}'.")
 
     def _feed_tool_result(self, result_text, display_text=None):
-        # Don't render tool results in the UI — assistant summarizes them.
-        # Store in DB so the model can read them in the next turn.
-        self.store.add_message(self.current_chat_id, "user",
+        # Route to the chat this turn was started in.
+        chat_id = self.streaming_chat_id or self.current_chat_id
+        self.store.add_message(chat_id, "user",
                                 f"<tool_result>\n{result_text}\n</tool_result>",
                                 meta={"kind": "tool_result"})
         self.streaming_msg_widget = None
         self.streaming_msg_db_id = None
+        # streaming_chat_id stays set — _kick_assistant_turn will preserve it
         self._kick_assistant_turn()
 
     def _tool_simple(self, fn):
@@ -1725,12 +1824,17 @@ class MainWindow(Adw.ApplicationWindow):
         if not path:
             self._feed_tool_result("error: no path")
             return
+        def do_read():
+            def _bg():
+                r = tool_read_file(path)
+                GLib.idle_add(self._render_read, r)
+            threading.Thread(target=_bg, daemon=True).start()
         if is_sensitive_path(path):
             confirm_sensitive_read_dialog(self, path, lambda allow:
-                self._render_read(tool_read_file(path)) if allow
+                do_read() if allow
                 else self._feed_tool_result(f"denied: {path}"))
         else:
-            self._render_read(tool_read_file(path))
+            do_read()
 
     def _render_read(self, r):
         if not r.get("ok"):
@@ -1743,15 +1847,18 @@ class MainWindow(Adw.ApplicationWindow):
                                 f"{header}\n\n{body[:2000]}")
 
     def _tool_list_dir(self, path):
-        r = tool_list_dir(path)
-        if not r.get("ok"):
-            self._feed_tool_result(f"list_dir error: {r.get('error')}")
-            return
-        lines = [f"dir: {r['path']}", ""]
-        for e in r["entries"]:
-            sz = "" if e["is_dir"] else f"  ({e['size']}B)"
-            lines.append(f"  {e['name']}{sz}")
-        self._feed_tool_result("\n".join(lines))
+        def _bg():
+            r = tool_list_dir(path)
+            if not r.get("ok"):
+                text = f"list_dir error: {r.get('error')}"
+            else:
+                lines = [f"dir: {r['path']}", ""]
+                for e in r["entries"]:
+                    sz = "" if e["is_dir"] else f"  ({e['size']}B)"
+                    lines.append(f"  {e['name']}{sz}")
+                text = "\n".join(lines)
+            GLib.idle_add(self._feed_tool_result, text)
+        threading.Thread(target=_bg, daemon=True).start()
 
     def _tool_find_file(self, pattern, search_path):
         def _bg():
@@ -1790,44 +1897,94 @@ class MainWindow(Adw.ApplicationWindow):
     def _tool_audit(self):
         self._show_toast("Auditing…")
         def _bg():
-            audit = run_security_audit()
-            GLib.idle_add(self._feed_tool_result,
-                            format_audit_for_chat(audit))
+            try:
+                audit = run_security_audit()
+                text = format_audit_for_chat(audit)
+            except Exception as e:
+                text = f"audit failed: {type(e).__name__}: {e}"
+            GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
     def _tool_scan_net(self, cidr=None):
         self._show_toast("Scanning network…")
         def _bg():
-            scan = run_network_scan(cidr)
-            GLib.idle_add(self._feed_tool_result,
-                            format_scan_for_chat(scan))
+            try:
+                scan = run_network_scan(cidr)
+                text = format_scan_for_chat(scan)
+            except Exception as e:
+                text = f"scan failed: {type(e).__name__}: {e}"
+            GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
     # ── user-initiated chip actions ─────────────────────────────
 
+    def _is_busy(self) -> bool:
+        """True when an assistant turn or tool call is in flight."""
+        if self.streaming_thread and self.streaming_thread.is_alive():
+            return True
+        if self.streaming_msg_widget is not None:
+            return True
+        if self.streaming_chat_id is not None:
+            return True
+        return False
+
+    def _begin_chip_action(self) -> bool:
+        """Snapshot the current chat for an upcoming chip-triggered tool
+        and disable send.  Returns False if we're already busy."""
+        if self._is_busy():
+            self._show_toast("Already busy — wait.")
+            return False
+        self.send_btn.set_sensitive(False)
+        # Capture the chat NOW so that when the async tool finishes and
+        # _feed_tool_result fires (could be many seconds later), the
+        # result lands in the chat the user clicked from, not whichever
+        # they happen to be looking at when the result arrives.
+        if self.current_chat_id is None:
+            self._new_chat()
+        self.streaming_chat_id = self.current_chat_id
+        self._tool_chain_depth = 0
+        return True
+
+    def _maybe_set_title_from_first(self, chat_id: int, first_text: str):
+        """If this is the first user message in the chat, derive a title
+        from it.  Called from both regular send and chip actions."""
+        if self.store.count_messages_by_role(chat_id, "user") == 1:
+            title = title_from_first_message(first_text)
+            self.store.rename_chat(chat_id, title)
+            if chat_id == self.current_chat_id:
+                self.chat_title_lbl.set_text(title)
+            self._refresh_sidebar()
+
     def _inject_user_request(self, text: str):
         if self.current_chat_id is None:
             self._new_chat()
-        self.store.add_message(self.current_chat_id, "user", text)
+        cid = self.current_chat_id
+        self.store.add_message(cid, "user", text)
         self._append_message_widget("user", text)
+        self._maybe_set_title_from_first(cid, text)
 
     def _user_action_audit(self):
+        if not self._begin_chip_action(): return
         self._inject_user_request("Audit my system and tell me what to fix.")
         self._tool_audit()
 
     def _user_action_scan(self):
+        if not self._begin_chip_action(): return
         self._inject_user_request("Scan the local network.")
         self._tool_scan_net()
 
     def _user_action_sysinfo(self):
+        if not self._begin_chip_action(): return
         self._inject_user_request("Give me a system overview.")
         self._tool_simple(tool_system_info)
 
     def _user_action_updates(self):
+        if not self._begin_chip_action(): return
         self._inject_user_request("What security updates are pending?")
         self._tool_simple(tool_check_updates)
 
     def _user_action_downloads(self):
+        if not self._begin_chip_action(): return
         self._inject_user_request("What's in my Downloads recently?")
         self._tool_simple(lambda: tool_recent_downloads(20))
 
@@ -1844,22 +2001,31 @@ class MainWindow(Adw.ApplicationWindow):
         dlg.open(self, None, _cb)
 
     def _attach_file(self, path):
-        r = tool_read_file(path, max_bytes=40_000)
+        if not path:
+            self._show_toast("Could not get file path.")
+            return
+        def _bg():
+            r = tool_read_file(path, max_bytes=40_000)
+            GLib.idle_add(self._finish_attach, path, r)
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _finish_attach(self, path, r):
         if not r.get("ok"):
             self._show_toast(f"Read error: {r.get('error')}")
-            return
+            return False
         buf = self.input_view.get_buffer()
         cur = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
         body = r["content"]
         new = (f"{cur}\n\n[attached: {path}]\n```\n{body}\n```\n"
                if cur else f"[attached: {path}]\n```\n{body}\n```\n")
         buf.set_text(new)
+        return False
 
     # ── history ─────────────────────────────────────────────────
 
-    def _build_history_for_model(self):
+    def _build_history_for_model(self, chat_id: Optional[int] = None):
         out = []
-        msgs = self.store.list_messages(self.current_chat_id)
+        msgs = self.store.list_messages(chat_id or self.current_chat_id)
         for m in msgs:
             kind = (m.meta or {}).get("kind")
             if m.role == "user":
@@ -1871,6 +2037,7 @@ class MainWindow(Adw.ApplicationWindow):
                     out.append({"role": "user", "content": m.content})
             elif m.role == "system":
                 out.append({"role": "system", "content": m.content})
+        return out
         return out
 
     # ── agent toggle ────────────────────────────────────────────
@@ -1932,12 +2099,47 @@ class MainWindow(Adw.ApplicationWindow):
         dlg.add_response("delete", "Delete")
         dlg.set_response_appearance("delete",
                                      Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
         def _cb(d, response):
-            if response == "delete":
-                self.store.delete_chat(self.current_chat_id)
-                self.current_chat_id = None
-                self._new_chat()
-                self._refresh_sidebar()
+            if response != "delete":
+                return
+            deleted_id = self.current_chat_id
+
+            # If the chat being deleted has a turn in flight, cancel it
+            # so it doesn't try to write to a now-gone chat row.
+            if self.streaming_chat_id == deleted_id:
+                if self.streaming_cancel:
+                    self.streaming_cancel.set()
+                self.streaming_msg_widget = None
+                self.streaming_msg_db_id = None
+                self.streaming_chat_id = None
+                self._tool_chain_depth = 0
+                self.send_btn.set_sensitive(True)
+
+            self.store.delete_chat(deleted_id)
+            self.current_chat_id = None
+
+            # Pick the next-most-recent chat to display, if any.  Only
+            # spawn a fresh one when there are literally no chats left.
+            remaining = self.store.list_chats(limit=1)
+            if remaining:
+                self._load_chat(remaining[0].id)
+            else:
+                # No chats at all — clear the view and let the user
+                # start fresh whenever they want via the + button.
+                child = self.msg_box.get_first_child()
+                while child is not None:
+                    nxt = child.get_next_sibling()
+                    self.msg_box.remove(child)
+                    child = nxt
+                self.chat_title_lbl.set_text("No chat")
+                self.chat_subtitle_lbl.set_text("Tap + to start a new chat")
+                self._show_empty_state()
+
+            self._refresh_sidebar()
+
         dlg.connect("response", _cb)
         dlg.present(self)
 
@@ -1959,8 +2161,16 @@ class MainWindow(Adw.ApplicationWindow):
             banner.add_css_class("watcher-banner")
             banner.set_xalign(0.0)
             banner.set_wrap(True)
-            banner.set_markup(
-                f"<b>{event['title']}</b>\n{event.get('detail','')}")
+            # Escape user-controlled strings (filenames, journal lines)
+            # before composing pango markup, or set_markup will reject
+            # invalid input and the banner won't render.
+            title = GLib.markup_escape_text(event.get("title", ""))
+            detail = GLib.markup_escape_text(event.get("detail", ""))
+            try:
+                banner.set_markup(f"<b>{title}</b>\n{detail}")
+            except Exception:
+                # Final fallback if markup still fails for any reason
+                banner.set_text(f"{event.get('title','')}\n{event.get('detail','')}")
             self.banner_box.append(banner)
             # auto-remove after 15s
             GLib.timeout_add_seconds(15,
@@ -1983,8 +2193,12 @@ class MainWindow(Adw.ApplicationWindow):
         if self.streaming_cancel:
             self.streaming_cancel.set()
         self.watcher.stop()
-        if self.settings.get("stop_ollama_on_quit", False):
+        if self.settings.get("stop_ollama_on_quit", True):
             self.ollama.stop_serve()
+        try:
+            self.store.close()
+        except Exception:
+            pass
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -2000,7 +2214,10 @@ class KaliApp(Adw.Application):
     def do_startup(self):
         Adw.Application.do_startup(self)
         provider = Gtk.CssProvider()
-        provider.load_from_data(CSS)
+        global _UI_SCALE
+        _UI_SCALE = _detect_ui_scale()
+        provider.load_from_data(_scale_css(CSS, _UI_SCALE))
+        log(f"ui_scale = {_UI_SCALE:.2f}")
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -2016,6 +2233,74 @@ class KaliApp(Adw.Application):
         if self.win:
             self.win.shutdown()
         Adw.Application.do_shutdown(self)
+
+
+def _detect_ui_scale() -> float:
+    """Pick a UI scale based on the screen we're on.
+
+    Phone (logical width < 800 px)   → 1.0  (keep big touch-friendly sizes)
+    Tablet/small laptop (< 1200 px)  → 0.85
+    Desktop                          → 0.7
+
+    Logical px are after GTK's own HiDPI scaling, so a Phosh phone with
+    1080×2160 physical pixels at 2x scale reports ~540×1080 logical here.
+    """
+    try:
+        # User override from settings.json takes precedence
+        s = load_settings().get("ui_scale", 0)
+        if isinstance(s, (int, float)) and s > 0.3 and s < 3:
+            return float(s)
+    except Exception:
+        pass
+    try:
+        display = Gdk.Display.get_default()
+        if not display:
+            return 1.0
+        monitors = display.get_monitors()
+        if monitors is None or monitors.get_n_items() == 0:
+            return 1.0
+        monitor = monitors.get_item(0)
+        geo = monitor.get_geometry()
+        w = int(geo.width)
+        if w < 800:
+            return 1.0
+        elif w < 1200:
+            return 0.85
+        else:
+            return 0.7
+    except Exception:
+        return 1.0
+
+
+# Cached UI scale.  Set once in do_startup so widgets created later (avatars,
+# buttons) can apply the same scale to their programmatic sizes that the CSS
+# uses for fonts/padding.
+_UI_SCALE: float = 1.0
+
+def _ui_scale() -> float:
+    return _UI_SCALE
+
+
+def _scaled(n: int, floor: int = 1) -> int:
+    return max(floor, int(round(n * _UI_SCALE)))
+
+
+_PX_RE = re.compile(r'(\d+)px')
+
+
+def _scale_css(css_bytes: bytes, scale: float) -> bytes:
+    """Multiply every Npx in the CSS by `scale`, with a sane floor so
+    border-widths and 1px lines don't disappear."""
+    if abs(scale - 1.0) < 0.01:
+        return css_bytes
+    text = css_bytes.decode("utf-8")
+    def repl(m):
+        n = int(m.group(1))
+        if n <= 2:
+            return f"{n}px"   # don't scale 1px/2px borders
+        scaled = max(1, int(round(n * scale)))
+        return f"{scaled}px"
+    return _PX_RE.sub(repl, text).encode("utf-8")
 
 
 def main():

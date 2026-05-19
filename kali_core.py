@@ -62,10 +62,17 @@ HTTP_TIMEOUT_S    = 600
 HEALTH_TIMEOUT_S  = 1.5
 
 GROQ_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# Ordered roughly by capability (biggest first).  Each model on Groq has
+# its OWN rate-limit bucket — when one hits a 429, the chain moves to
+# the next so testing/iteration doesn't grind to a halt.  Verified
+# against the current GroqCloud catalogue (May 2026).
 GROQ_FALLBACK_CHAIN = [
-    "llama-3.3-70b-versatile",
-    "openai/gpt-oss-120b",
-    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",                       # default; 70B Llama, best quality
+    "openai/gpt-oss-120b",                           # 120B OpenAI open-weight
+    "meta-llama/llama-4-scout-17b-16e-instruct",     # newest Llama 4, fast
+    "qwen/qwen3-32b",                                # different family, strong reasoning
+    "openai/gpt-oss-20b",                            # 20B, very fast
+    "llama-3.1-8b-instant",                          # last resort, 560 t/s
 ]
 OLLAMA_DEFAULT_MODEL = "llama3.2:1b"
 
@@ -141,9 +148,20 @@ def load_settings() -> Dict[str, Any]:
 
 
 def save_settings(settings: Dict[str, Any]) -> None:
+    # Atomic write: temp file in same directory, then os.replace.  Without
+    # this, a crash mid-write would leave settings.json truncated or empty
+    # and the next load would silently fall back to defaults — wiping the
+    # operator's Groq API key, ollama model selection, etc.
     try:
-        with open(SETTINGS_JSON, "w", encoding="utf-8") as f:
+        tmp = SETTINGS_JSON.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, SETTINGS_JSON)
     except Exception as e:
         log(f"save_settings error: {e}")
 
@@ -198,14 +216,31 @@ class OllamaBackend:
     def __init__(self):
         self._proc: Optional[subprocess.Popen] = None
         self._started_by_us = False
+        # Cache the most recent health probe so the UI thread doesn't
+        # block 1.5s on every send when ollama is unreachable.
+        self._running_cache = {"value": False, "ts": 0.0}
+        self._running_cache_lock = threading.Lock()
 
-    def is_running(self) -> bool:
+    def is_running(self, max_age: float = 4.0) -> bool:
+        """Cached health check.  Re-probes at most every max_age seconds."""
+        now = time.time()
+        with self._running_cache_lock:
+            if now - self._running_cache["ts"] < max_age:
+                return bool(self._running_cache["value"])
         try:
             req = urllib.request.Request(f"{OLLAMA_HOST}/api/version")
             with urllib.request.urlopen(req, timeout=HEALTH_TIMEOUT_S) as r:
-                return r.status == 200
+                value = (r.status == 200)
         except Exception:
-            return False
+            value = False
+        with self._running_cache_lock:
+            self._running_cache["value"] = value
+            self._running_cache["ts"] = now
+        return value
+
+    def _invalidate_running_cache(self):
+        with self._running_cache_lock:
+            self._running_cache["ts"] = 0.0
 
     def is_available(self) -> bool:
         return self.is_running()
@@ -226,6 +261,7 @@ class OllamaBackend:
             self._started_by_us = True
             for _ in range(20):
                 time.sleep(0.25)
+                self._invalidate_running_cache()
                 if self.is_running():
                     return True
             return False
@@ -245,19 +281,35 @@ class OllamaBackend:
                     timeout=4)
             except Exception:
                 pass
-        if not self._started_by_us or self._proc is None:
-            return
-        try:
-            self._proc.terminate()
+
+        # Terminate the subprocess we spawned (if any)
+        if self._started_by_us and self._proc is not None:
             try:
-                self._proc.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+                self._proc.terminate()
+                try:
+                    self._proc.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    self._proc.kill()
+            except Exception:
+                pass
+            finally:
+                self._proc = None
+                self._started_by_us = False
+
+        # Also kill any orphaned `ollama serve` left over from a previous
+        # Kali run that quit uncleanly.  Scoped to OUR user so it can't
+        # hit a system-level ollama running as another user.
+        try:
+            subprocess.run(
+                ["pkill", "-u", os.environ.get("USER", ""), "-f",
+                 "ollama serve"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=4)
         except Exception:
             pass
-        finally:
-            self._proc = None
-            self._started_by_us = False
+        self._invalidate_running_cache()
 
     def list_models(self) -> List[Dict[str, Any]]:
         try:
@@ -365,6 +417,7 @@ class GroqBackend:
         # Build a model order: requested first, then any fallbacks not equal
         order = [model] + [m for m in self.fallback_chain if m != model]
         last_err = None
+        any_tokens_emitted = False  # see below
 
         for attempt_model in order:
             if cancel_event and cancel_event.is_set():
@@ -391,6 +444,7 @@ class GroqBackend:
                     tok = getattr(delta, "content", None) or ""
                     if tok:
                         parts.append(tok)
+                        any_tokens_emitted = True
                         on_token(tok)
                 on_done({
                     "text": "".join(parts),
@@ -402,6 +456,16 @@ class GroqBackend:
             except Exception as e:
                 last_err = e
                 msg = str(e).lower()
+
+                # If we've already emitted tokens to the UI, falling back
+                # to a different model would APPEND its tokens after the
+                # partial output from this one — the user would see a
+                # garbled mash-up.  Propagate the error instead.
+                if any_tokens_emitted:
+                    on_error(f"groq {type(e).__name__} mid-stream: "
+                             f"{str(e)[:200]}")
+                    return
+
                 if any(s in msg for s in ("rate", "429", "quota", "limit")):
                     log(f"groq {attempt_model} rate-limited, trying next")
                     continue
@@ -445,17 +509,28 @@ class BackendRouter:
             "num_ctx": self.settings.get("num_ctx", 4096),
         }
 
+        # Track whether we emitted any tokens through the wrapper.
+        emitted = {"any": False}
+
+        def _on_tok(t: str):
+            emitted["any"] = True
+            on_token(t)
+
         # Wrap on_error so we can attempt Ollama fallback if Groq fails
+        # — but only when no tokens have made it to the UI yet.  Otherwise
+        # we'd splice two model outputs together.
         def _on_err(err: str):
-            if backend.name == "groq" and self.ollama.is_available():
+            if (backend.name == "groq"
+                    and not emitted["any"]
+                    and self.ollama.is_running()):
                 log(f"groq failed ({err}) — falling back to ollama")
                 self.ollama.stream_chat(
                     self.settings.get("ollama_model", OLLAMA_DEFAULT_MODEL),
-                    messages, on_token, on_done, on_error, opts, cancel_event)
+                    messages, _on_tok, on_done, on_error, opts, cancel_event)
             else:
                 on_error(err)
 
-        backend.stream_chat(model, messages, on_token, on_done, _on_err,
+        backend.stream_chat(model, messages, _on_tok, on_done, _on_err,
                             opts, cancel_event)
         return backend.name, model
 
@@ -514,27 +589,41 @@ class ChatStore:
     def __init__(self, path: Path = CHATS_DB):
         self.path = path
         self._lock = threading.Lock()
-        with self._conn() as c:
-            c.executescript(CHAT_DDL)
+        # ONE persistent connection.  Previously we opened a fresh
+        # connection per call via `with self._conn() as c:` — the
+        # context manager commits but does NOT close, so every
+        # operation leaked a file handle.  Over hundreds of operations
+        # the app would hit ulimit and start failing.
+        self._db = sqlite3.connect(str(path), check_same_thread=False,
+                                    isolation_level=None)  # autocommit
+        self._db.execute("PRAGMA foreign_keys=ON")
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
+        self._db.executescript(CHAT_DDL)
 
-    def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.path, check_same_thread=False)
-        c.execute("PRAGMA foreign_keys=ON")
-        return c
+    def close(self) -> None:
+        try:
+            with self._lock:
+                self._db.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.close()
 
     def create_chat(self, title: str, model: str,
                     agent_mode: bool = True) -> int:
         now = time.time()
-        with self._lock, self._conn() as c:
-            cur = c.execute(
+        with self._lock:
+            cur = self._db.execute(
                 "INSERT INTO chats (title, model, created_at, updated_at, "
                 "agent_mode) VALUES (?, ?, ?, ?, ?)",
                 (title, model, now, now, 1 if agent_mode else 0))
             return cur.lastrowid
 
     def list_chats(self, limit: int = 200) -> List[Chat]:
-        with self._lock, self._conn() as c:
-            rows = c.execute(
+        with self._lock:
+            rows = self._db.execute(
                 "SELECT id, title, model, created_at, updated_at, pinned, "
                 "agent_mode FROM chats "
                 "ORDER BY pinned DESC, updated_at DESC LIMIT ?",
@@ -542,59 +631,70 @@ class ChatStore:
         return [Chat(*r) for r in rows]
 
     def get_chat(self, chat_id: int) -> Optional[Chat]:
-        with self._lock, self._conn() as c:
-            row = c.execute(
+        with self._lock:
+            row = self._db.execute(
                 "SELECT id, title, model, created_at, updated_at, pinned, "
                 "agent_mode FROM chats WHERE id=?", (chat_id,)).fetchone()
         return Chat(*row) if row else None
 
     def rename_chat(self, chat_id: int, title: str) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("UPDATE chats SET title=?, updated_at=? WHERE id=?",
-                      (title, time.time(), chat_id))
+        with self._lock:
+            self._db.execute("UPDATE chats SET title=?, updated_at=? WHERE id=?",
+                             (title, time.time(), chat_id))
 
     def set_pinned(self, chat_id: int, pinned: bool) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("UPDATE chats SET pinned=? WHERE id=?",
-                      (1 if pinned else 0, chat_id))
+        with self._lock:
+            self._db.execute("UPDATE chats SET pinned=? WHERE id=?",
+                             (1 if pinned else 0, chat_id))
 
     def set_agent_mode(self, chat_id: int, agent: bool) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("UPDATE chats SET agent_mode=? WHERE id=?",
-                      (1 if agent else 0, chat_id))
+        with self._lock:
+            self._db.execute("UPDATE chats SET agent_mode=? WHERE id=?",
+                             (1 if agent else 0, chat_id))
 
     def delete_chat(self, chat_id: int) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("DELETE FROM chats WHERE id=?", (chat_id,))
+        with self._lock:
+            self._db.execute("DELETE FROM chats WHERE id=?", (chat_id,))
 
     def add_message(self, chat_id: int, role: str, content: str,
                     meta: Optional[Dict[str, Any]] = None) -> int:
         meta_s = json.dumps(meta) if meta else None
-        with self._lock, self._conn() as c:
-            cur = c.execute(
+        with self._lock:
+            cur = self._db.execute(
                 "INSERT INTO messages (chat_id, role, content, ts, meta) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (chat_id, role, content, time.time(), meta_s))
-            c.execute("UPDATE chats SET updated_at=? WHERE id=?",
-                      (time.time(), chat_id))
+            self._db.execute("UPDATE chats SET updated_at=? WHERE id=?",
+                             (time.time(), chat_id))
             return cur.lastrowid
 
     def list_messages(self, chat_id: int) -> List[Message]:
-        with self._lock, self._conn() as c:
-            rows = c.execute(
+        with self._lock:
+            rows = self._db.execute(
                 "SELECT id, chat_id, role, content, ts, meta "
                 "FROM messages WHERE chat_id=? ORDER BY ts ASC, id ASC",
                 (chat_id,)).fetchall()
         out = []
         for r in rows:
-            meta = json.loads(r[5]) if r[5] else {}
+            try:
+                meta = json.loads(r[5]) if r[5] else {}
+            except json.JSONDecodeError:
+                meta = {}
             out.append(Message(r[0], r[1], r[2], r[3], r[4], meta))
         return out
 
     def update_message(self, msg_id: int, content: str) -> None:
-        with self._lock, self._conn() as c:
-            c.execute("UPDATE messages SET content=? WHERE id=?",
-                      (content, msg_id))
+        with self._lock:
+            self._db.execute("UPDATE messages SET content=? WHERE id=?",
+                             (content, msg_id))
+
+    def count_messages_by_role(self, chat_id: int, role: str) -> int:
+        """Cheap count for first-message detection — avoids re-fetching all."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM messages WHERE chat_id=? AND role=?",
+                (chat_id, role)).fetchone()
+        return row[0] if row else 0
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -611,11 +711,22 @@ def is_sensitive_path(path: str) -> bool:
 
 def _ro(argv: List[str], timeout: int = 12) -> Tuple[int, str, str]:
     try:
+        # Preserve the subset of env vars that systemctl --user /
+        # journalctl --user / D-Bus tooling need to find the user session.
+        # Stripping these (as the previous version did) silently broke
+        # any --user command.
         env = {
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
             "HOME": os.path.expanduser("~"),
+            "USER": os.environ.get("USER", ""),
         }
+        for key in ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
+                    "XDG_DATA_DIRS", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME",
+                    "DISPLAY", "WAYLAND_DISPLAY"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+
         p = subprocess.run(
             argv, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -626,7 +737,7 @@ def _ro(argv: List[str], timeout: int = 12) -> Tuple[int, str, str]:
     except FileNotFoundError:
         return (127, "", "not found")
     except Exception as e:
-        return (1, "", f"err: {type(e).__name__}")
+        return (1, "", f"err: {type(e).__name__}: {e}")
 
 
 def _have(c: str) -> bool:
@@ -800,11 +911,21 @@ def tool_recent_downloads(limit: int = 20) -> Dict[str, Any]:
             break
     if not found:
         return {"ok": False, "error": "no Downloads folder found"}
+
+    # Build (entry, mtime) list defensively — a dangling symlink in the
+    # directory would raise inside the sort key lambda otherwise, killing
+    # the whole call.
+    def _mtime_safe(entry):
+        try:
+            return entry.stat().st_mtime
+        except Exception:
+            return 0.0
+
     files = []
     try:
-        for entry in sorted(found.iterdir(),
-                            key=lambda x: x.stat().st_mtime,
-                            reverse=True)[:limit]:
+        all_entries = list(found.iterdir())
+        all_entries.sort(key=_mtime_safe, reverse=True)
+        for entry in all_entries[:limit]:
             try:
                 st = entry.stat()
                 files.append({
@@ -816,7 +937,13 @@ def tool_recent_downloads(limit: int = 20) -> Dict[str, Any]:
                     "is_dir": entry.is_dir(),
                 })
             except Exception:
-                continue
+                # Dangling symlink, permission denied — still list it
+                files.append({
+                    "name": entry.name,
+                    "size_human": "?", "size": -1,
+                    "mtime": 0.0, "age_seconds": 0.0,
+                    "is_dir": False,
+                })
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "path": str(found), "files": files}
@@ -938,12 +1065,17 @@ def tool_find_file(pattern: str,
     rp = os.path.expanduser(search_path)
     if not os.path.isdir(rp):
         return {"ok": False, "error": f"not a directory: {search_path}"}
-    rc, out, _ = _ro(["find", rp, "-name", pattern, "-type", "f"],
-                     timeout=30)
-    results = out.splitlines()[:max_results]
+    rc, out, err = _ro(["find", rp, "-name", pattern, "-type", "f"],
+                       timeout=30)
+    if rc == 124:
+        return {"ok": False, "error": "find timed out after 30s — "
+                                       "narrow the search path or pattern",
+                "partial": out.splitlines()[:max_results]}
+    all_lines = out.splitlines()
+    results = all_lines[:max_results]
     return {"ok": True, "pattern": pattern, "search_path": rp,
             "found": results, "count": len(results),
-            "truncated": len(out.splitlines()) > max_results}
+            "truncated": len(all_lines) > max_results}
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1450,7 +1582,11 @@ class Watcher:
         self.settings = settings
         self.on_event = on_event
         self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
+        # Per-thread stop event.  Each new thread gets its own; toggling
+        # the watcher off→on rapidly used to leave the old thread running
+        # because we cleared a shared event before the old thread had
+        # noticed it was set.
+        self._thread_stop: Optional[threading.Event] = None
         self._last_update_check = 0.0
         self._last_download_check = 0.0
         self._known_downloads: set = set()
@@ -1458,18 +1594,26 @@ class Watcher:
     def start(self):
         if not self.settings.get("watcher_enabled"):
             return
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        # Signal any previous thread to wind down — it owns its own event,
+        # so we don't disturb the new thread by doing so.
+        if self._thread_stop is not None:
+            self._thread_stop.set()
+        # Don't bother joining; the old thread will exit on its next sleep
+        # tick.  A brief overlap is harmless (events are de-duped by the
+        # _known_downloads / _last_update_check state on the new thread).
+        new_stop = threading.Event()
+        self._thread_stop = new_stop
+        self._thread = threading.Thread(
+            target=self._loop, args=(new_stop,), daemon=True)
         self._thread.start()
         log("watcher started")
 
     def stop(self):
-        self._stop.set()
+        if self._thread_stop is not None:
+            self._thread_stop.set()
         log("watcher stopping")
 
-    def _loop(self):
+    def _loop(self, stop_event: threading.Event):
         # First pass: prime known downloads so we don't spam on startup
         try:
             r = tool_recent_downloads(50)
@@ -1478,15 +1622,18 @@ class Watcher:
         except Exception:
             pass
 
-        interval = self.settings.get("watcher_interval_minutes", 60) * 60
-        while not self._stop.is_set():
+        while not stop_event.is_set():
             try:
                 self._tick()
             except Exception as e:
                 log(f"watcher tick error: {e}")
+            # Re-read interval each cycle so settings changes take effect
+            # without an app restart.
+            interval = max(60, int(
+                self.settings.get("watcher_interval_minutes", 60)) * 60)
             # sleep in small slices so stop is responsive
-            for _ in range(int(interval)):
-                if self._stop.is_set():
+            for _ in range(interval):
+                if stop_event.is_set():
                     return
                 time.sleep(1)
 

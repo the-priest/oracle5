@@ -199,9 +199,21 @@ def build_system_prompt(agent_mode: bool = True,
 
 def assemble_messages(system_prompt: str,
                       history: List[Dict[str, str]],
-                      max_history_msgs: int = 40
+                      max_history_msgs: int = 80
                       ) -> List[Dict[str, str]]:
-    trimmed = history[-max_history_msgs:] if len(history) > max_history_msgs else history
+    if len(history) <= max_history_msgs:
+        trimmed = list(history)
+    else:
+        # Keep the very first user message (often carries the task framing
+        # the rest of the conversation refers back to) and the last N-1.
+        first_user_idx = next(
+            (i for i, m in enumerate(history) if m.get("role") == "user"),
+            None)
+        tail = history[-(max_history_msgs - 1):]
+        if first_user_idx is not None and history[first_user_idx] not in tail:
+            trimmed = [history[first_user_idx]] + tail
+        else:
+            trimmed = tail
     return [{"role": "system", "content": system_prompt}, *trimmed]
 
 

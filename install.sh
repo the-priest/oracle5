@@ -235,19 +235,20 @@ if [ $SKIP_GROQ -eq 0 ]; then
     ok "groq library already present"
   else
     say "installing groq (~few MB) via pip"
-    # Try multiple install strategies — handles externally-managed envs
-    if pip install --user --quiet groq 2>/dev/null; then
+    # `python3 -m pip` works whether the user has `pip` or `pip3` on PATH
+    # (or neither — they may need apt to install pip first).
+    if python3 -m pip install --user --quiet groq 2>/dev/null; then
       ok "groq installed (pip --user)"
-    elif pip install --user --break-system-packages --quiet groq 2>/dev/null; then
+    elif python3 -m pip install --user --break-system-packages --quiet groq 2>/dev/null; then
       ok "groq installed (pip --user --break-system-packages)"
     elif command -v pipx >/dev/null && pipx install groq 2>/dev/null; then
       ok "groq installed (pipx)"
     elif command -v apt-get >/dev/null && sudo apt-get install -y python3-pip 2>/dev/null \
-         && pip install --user --break-system-packages --quiet groq 2>/dev/null; then
+         && python3 -m pip install --user --break-system-packages --quiet groq 2>/dev/null; then
       ok "groq installed (after pip install)"
     else
       warn "could not auto-install groq library — Kali will work with Ollama only"
-      warn "to fix later:   pip install --user --break-system-packages groq"
+      warn "to fix later:   python3 -m pip install --user --break-system-packages groq"
     fi
   fi
 else
@@ -324,7 +325,7 @@ stop_ollama_temp() {
   # Stop only if we started it.  Leaves user-started ollamas alone.
   if [ "${OLLAMA_STARTED_TEMP:-0}" = "1" ]; then
     say "stopping the temporary ollama"
-    pkill -f "ollama serve" 2>/dev/null || true
+    pkill -u "${USER:-$(id -un)}" -f "ollama serve" 2>/dev/null || true
     sleep 1
   fi
 }
