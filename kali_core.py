@@ -1102,41 +1102,123 @@ class Finding:
 
 
 def check_firewall() -> List[Finding]:
+    """Detect firewall presence WITHOUT requiring root.
+
+    The previous version called `ufw status`, `iptables -S`, and `nft
+    list ruleset` directly — all of which require CAP_NET_ADMIN.  When
+    the audit ran as the regular user (the normal case) every command
+    returned permission-denied, the script fell through to the final
+    "No firewall detected — HIGH" branch, and the user got told their
+    system was open even when it wasn't.
+
+    New approach: ask systemd first.  `systemctl is-active <unit>` is
+    readable by any user and tells us whether the firewall *service*
+    is up.  Then check ufw.conf for the boot-time enable flag.  Only
+    after that do we try the privileged inspectors — and if they fail
+    we report uncertainty rather than asserting absence.
+    """
     fs: List[Finding] = []
     fw_active = False
-    if _have("ufw"):
-        rc, out, _ = _ro(["ufw", "status"])
-        if rc == 0 and re.search(r'status:\s*active', out, re.I):
+    detected_via = None
+
+    # ── pass 1: systemd services (no root needed) ─────────────────
+    if _have("systemctl"):
+        for svc in ("ufw", "firewalld", "nftables", "iptables",
+                    "netfilter-persistent"):
+            rc, out, _ = _ro(
+                ["systemctl", "is-active", f"{svc}.service"], timeout=4)
+            if out.strip() == "active":
+                fw_active = True
+                detected_via = svc
+                fs.append(Finding(
+                    f"FW-S{svc[:3].upper()}",
+                    f"{svc} service is active",
+                    "info",
+                    f"systemctl reports {svc}.service active"))
+                break
+
+    # ── pass 2: ufw.conf (also no root needed) ────────────────────
+    if not fw_active:
+        ufw_conf = _read("/etc/ufw/ufw.conf")
+        if ufw_conf and re.search(
+                r'^\s*ENABLED\s*=\s*yes', ufw_conf, re.M | re.I):
             fw_active = True
-            fs.append(Finding("FW-001", "UFW firewall is active", "info",
-                              "ufw status: active", raw=out))
-        elif rc == 0 and re.search(r'status:\s*inactive', out, re.I):
+            detected_via = "ufw.conf"
+            fs.append(Finding(
+                "FW-CONF", "UFW enabled in /etc/ufw/ufw.conf", "info",
+                "ufw.conf has ENABLED=yes"))
+
+    # ── pass 3: privileged inspectors (best-effort) ───────────────
+    # These tell us about RULES, not just service state.  They mostly
+    # fail without root; we treat that as "no extra info", not as a
+    # negative signal.
+    privileged_attempts: List[Tuple[str, List[str]]] = []
+    if _have("ufw"):
+        privileged_attempts.append(("ufw",      ["ufw", "status"]))
+    if _have("iptables"):
+        privileged_attempts.append(("iptables", ["iptables", "-S"]))
+    if _have("nft"):
+        privileged_attempts.append(("nft",      ["nft", "list", "ruleset"]))
+
+    for label, argv in privileged_attempts:
+        rc, out, err = _ro(argv, timeout=6)
+        # Recognise the various "need root" responses so we don't
+        # mistake them for "no rules".
+        needs_root = (
+            rc != 0 and (
+                "need to be root" in (err + out).lower()
+                or "permission denied" in (err + out).lower()
+                or "operation not permitted" in (err + out).lower()))
+        if needs_root:
+            continue
+        if rc != 0:
+            continue
+        if label == "ufw" and re.search(r'status:\s*active', out, re.I):
+            if not fw_active:
+                fw_active = True
+                detected_via = "ufw status"
+                fs.append(Finding("FW-001", "UFW firewall is active",
+                                  "info", "ufw status: active",
+                                  raw=out[:1200]))
+        elif label == "ufw" and re.search(
+                r'status:\s*inactive', out, re.I) and not fw_active:
             fs.append(Finding("FW-002", "UFW firewall is INACTIVE", "high",
                               "ufw installed but not enabled",
-                              fix_hint="sudo ufw default deny incoming && "
-                                       "sudo ufw allow ssh && sudo ufw enable",
-                              raw=out))
-    if not fw_active and _have("iptables"):
-        rc, out, _ = _ro(["iptables", "-S"])
-        if rc == 0 and any(
+                              fix_hint=("sudo ufw default deny incoming && "
+                                        "sudo ufw allow ssh && sudo ufw enable"),
+                              raw=out[:1200]))
+        elif label == "iptables" and any(
                 re.search(r'-[PA]\s+\w+.*-j\s+(DROP|REJECT)', l)
                 or re.search(r'-P\s+\w+\s+(DROP|REJECT)', l)
                 for l in out.splitlines()):
-            fw_active = True
-            fs.append(Finding("FW-003", "iptables rules present", "info",
-                              "iptables rules configured", raw=out[:1200]))
-    if not fw_active and _have("nft"):
-        rc, out, _ = _ro(["nft", "list", "ruleset"])
-        if rc == 0 and out.strip():
-            fw_active = True
-            fs.append(Finding("FW-005", "nftables rules present", "info",
-                              "nftables ruleset loaded", raw=out[:1200]))
+            if not fw_active:
+                fw_active = True
+                detected_via = "iptables"
+                fs.append(Finding("FW-003", "iptables rules present",
+                                  "info", "iptables rules configured",
+                                  raw=out[:1200]))
+        elif label == "nft" and out.strip():
+            if not fw_active:
+                fw_active = True
+                detected_via = "nft"
+                fs.append(Finding("FW-005", "nftables rules present",
+                                  "info", "nftables ruleset loaded",
+                                  raw=out[:1200]))
+
+    # ── verdict ───────────────────────────────────────────────────
     if not fw_active:
-        fs.append(Finding("FW-006", "No firewall detected", "high",
-                          "No active rules in ufw / iptables / nft",
-                          fix_hint="sudo apt install ufw && sudo ufw "
-                                   "default deny incoming && sudo ufw "
-                                   "allow ssh && sudo ufw enable"))
+        fs.append(Finding(
+            "FW-006",
+            "No firewall detected (limited visibility without root)",
+            "medium",
+            "No ufw/firewalld/nftables/iptables service is active, "
+            "/etc/ufw/ufw.conf does not enable ufw, and the privileged "
+            "tools could not be inspected as a regular user.  Re-run the "
+            "audit with sudo for a definitive check.",
+            fix_hint=("sudo apt install ufw && sudo ufw default deny "
+                      "incoming && sudo ufw allow ssh && sudo ufw enable")))
+    else:
+        log(f"firewall detected via: {detected_via}")
     return fs
 
 
@@ -1296,22 +1378,40 @@ def check_world_writable_home() -> List[Finding]:
 
 def check_mac() -> List[Finding]:
     fs: List[Finding] = []
-    if _have("aa-status"):
-        rc, out, _ = _ro(["aa-status"])
-        if rc == 0 and "profiles are loaded" in out:
-            fs.append(Finding("MAC-001", "AppArmor active", "info",
-                              out.splitlines()[0] if out else ""))
+    # ── AppArmor: prefer the rootless probe ───────────────────────
+    # /sys/module/apparmor/parameters/enabled returns "Y" or "N" and
+    # is world-readable.  aa-status needs root for the full picture,
+    # so try it only as a bonus.
+    aa_enabled_flag = _read("/sys/module/apparmor/parameters/enabled")
+    if aa_enabled_flag is not None:
+        if aa_enabled_flag.strip().upper().startswith("Y"):
+            # Module is loaded.  Try aa-status for profile count, but
+            # fall back to a positive finding if it can't run.
+            details = "apparmor kernel module enabled"
+            if _have("aa-status"):
+                rc, out, _ = _ro(["aa-status"], timeout=4)
+                if rc == 0 and "profiles are loaded" in out:
+                    details = out.splitlines()[0] if out else details
+            fs.append(Finding("MAC-001", "AppArmor active", "info", details))
+            return fs
         else:
             fs.append(Finding("MAC-002", "AppArmor not loaded", "low",
-                              "aa-status: no profiles"))
-    elif _have("getenforce"):
+                              "/sys/module/apparmor/parameters/enabled=N"))
+            return fs
+
+    # ── SELinux fallback ──────────────────────────────────────────
+    if _have("getenforce"):
         rc, out, _ = _ro(["getenforce"])
-        if "Enforcing" in out:
+        mode = out.strip()
+        if rc == 0 and mode == "Enforcing":
             fs.append(Finding("MAC-003", "SELinux enforcing", "info",
                               "getenforce: Enforcing"))
-        else:
-            fs.append(Finding("MAC-004", f"SELinux mode: {out.strip()}",
+        elif rc == 0 and mode:
+            fs.append(Finding("MAC-004", f"SELinux mode: {mode}",
                               "low", "SELinux not enforcing"))
+        else:
+            fs.append(Finding("MAC-005", "No MAC system detected", "low",
+                              "AppArmor not loaded, SELinux not reporting"))
     else:
         fs.append(Finding("MAC-005", "No MAC system detected", "low",
                           "No AppArmor or SELinux"))

@@ -44,7 +44,7 @@ from kali_persona import (
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -912,6 +912,46 @@ class SettingsDialog(Adw.PreferencesDialog):
         gen_page.add(gen_g)
         self.add(gen_page)
 
+        # ── DISPLAY ────────────────────────────────────────
+        d_page = Adw.PreferencesPage()
+        d_page.set_title("Display")
+        d_page.set_icon_name("video-display-symbolic")
+
+        dg = Adw.PreferencesGroup()
+        dg.set_title("UI scale")
+        dg.set_description(
+            "Resize text, padding, and controls.  Restart required for "
+            "changes to take effect.  Set to 0 (then restart) for "
+            "automatic detection based on screen size.")
+
+        # Use a SpinRow over the full useful range.  0 is a sentinel
+        # meaning "let auto-detection pick" — clamped on the lower side
+        # so a slip of the finger doesn't make the UI invisible.
+        ui_scale_current = parent.settings.get("ui_scale", 0) or 0
+        scale_row = Adw.SpinRow.new_with_range(0.0, 2.0, 0.05)
+        scale_row.set_title("Scale factor")
+        scale_row.set_subtitle("1.0 = unmodified.  Higher = bigger.  0 = auto.")
+        scale_row.set_value(float(ui_scale_current))
+        scale_row.set_digits(2)
+        scale_row.connect("changed", self._on_ui_scale)
+        dg.add(scale_row)
+
+        # Reset button row
+        reset_row = Adw.ActionRow()
+        reset_row.set_title("Reset to auto-detect")
+        reset_row.set_subtitle("Sets scale back to 0.  Takes effect on restart.")
+        reset_btn = Gtk.Button(label="Reset")
+        reset_btn.set_valign(Gtk.Align.CENTER)
+        reset_btn.add_css_class("icon-button")
+        def _reset_scale(_b):
+            scale_row.set_value(0.0)
+        reset_btn.connect("clicked", _reset_scale)
+        reset_row.add_suffix(reset_btn)
+        dg.add(reset_row)
+
+        d_page.add(dg)
+        self.add(d_page)
+
         # ── BEHAVIOUR ──────────────────────────────────────
         b_page = Adw.PreferencesPage()
         b_page.set_title("Behaviour")
@@ -1062,6 +1102,12 @@ class SettingsDialog(Adw.PreferencesDialog):
 
     def _on_max(self, row):
         self._set("max_tokens", int(row.get_value()))
+
+    def _on_ui_scale(self, row):
+        # Persist as float.  Auto-detect happens at app startup when the
+        # stored value is outside the (0.3, 3.0) range — see
+        # _detect_ui_scale() in kali.py.
+        self._set("ui_scale", float(row.get_value()))
 
     def _on_agent_default(self, row, _ps):
         self._set("agent_mode_default", row.get_active())
