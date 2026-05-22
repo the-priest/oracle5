@@ -2004,16 +2004,31 @@ def format_scan_for_chat(scan: Dict[str, Any]) -> str:
 # TOOL CALL PARSING
 # ═════════════════════════════════════════════════════════════════════
 
-# Permissive matcher: accepts <tool name="X">{json}</tool>,
-# <tool>{json with "name" or "tool" key}</tool>, OR an unnamed <tool>
-# whose JSON contains "cmd"/"command" (default to "run").
-# Also tolerates: <\/tool> (model-escaped slash), smart-quote attrs,
-# leading/trailing whitespace inside the tag.
+# Permissive matcher.  Accepts every shape the model has been seen to
+# emit:
+#   <tool name="X">{json}</tool>          — JSON in the body (canonical)
+#   <tool>{json with "name"/"tool"}</tool>
+#   <tool name="X" json='{json}'></tool>  — JSON in a json= attribute
+#   <tool name="X" json='{json}'/>        — self-closing, JSON in attr
+# Group 1 = the name attribute (optional).
+# Group 2 = the full attribute blob after the tag word (so we can dig a
+#           json='...' out of it when the body is empty).
+# Group 3 = the body between > and </tool> (may be empty / absent).
+# Tolerates: <\/tool> (escaped slash), smart-quote attrs, whitespace,
+# and a missing closing tag (self-close or model dropped it).
 TOOL_TAG_RE = re.compile(
-    r'<tool(?:\s+name\s*=\s*["\u201c\u201d]([a-zA-Z_]+)["\u201c\u201d])?\s*>'
-    r'(.*?)'
-    r'<\\?\s*/\s*tool\s*>',
+    r'<tool'
+    r'((?:\s+[a-zA-Z_]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[\u201c\u201d][^\u201c\u201d]*[\u201c\u201d]))*)'  # attrs
+    r'\s*(?:/\s*>|>(.*?)(?:<\\?\s*/\s*tool\s*>|$))',
     re.DOTALL | re.IGNORECASE)
+
+# Pull name="..." out of the attribute blob.
+_NAME_ATTR_RE = re.compile(
+    r'\bname\s*=\s*["\'\u201c\u201d]([a-zA-Z_]+)["\'\u201c\u201d]')
+# Pull json='...' / json="..." out of the attribute blob.
+_JSON_ATTR_RE = re.compile(
+    r'\bjson\s*=\s*(?:"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\')',
+    re.DOTALL)
 
 # Also strip stray <tool> openings that never closed (mid-stream artefacts)
 TOOL_PARTIAL_RE = re.compile(
@@ -2031,12 +2046,30 @@ class ToolCall:
 def parse_tool_calls(text: str) -> List[ToolCall]:
     calls: List[ToolCall] = []
     for m in TOOL_TAG_RE.finditer(text):
-        name_attr = m.group(1)
-        body = m.group(2).strip()
+        attrs = m.group(1) or ""
+        body = (m.group(2) or "").strip()
+
+        # name comes from the name="..." attribute
+        name_attr = None
+        nm = _NAME_ATTR_RE.search(attrs)
+        if nm:
+            name_attr = nm.group(1)
+
+        # JSON source: prefer the body; fall back to a json='...' attribute
+        # (this is the case that produced the on-screen gibberish — the
+        # model put the JSON in an attribute and left the body empty).
+        json_src = body
+        if not json_src:
+            jm = _JSON_ATTR_RE.search(attrs)
+            if jm:
+                json_src = (jm.group(1) or jm.group(2) or "").strip()
+                # the attribute value may carry escaped quotes — unescape
+                json_src = json_src.replace('\\"', '"').replace("\\'", "'")
+
         try:
-            parsed = json.loads(body) if body else {}
+            parsed = json.loads(json_src) if json_src else {}
         except json.JSONDecodeError:
-            parsed = {"_raw": body}
+            parsed = {"_raw": json_src}
 
         # Resolve tool name
         name = name_attr
