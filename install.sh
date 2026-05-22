@@ -681,7 +681,9 @@ defaults = {
     "watcher_check_journal": False,
     "watcher_interval_minutes": 60,
     "theme": "mocha",
-    "ui_scale": 1.0,
+    "ui_scale": 0,  # 0 = auto-detect (must match kali_core DEFAULT_SETTINGS;
+                    # a hardcoded 1.0 here pins the scale and disables the
+                    # per-screen auto-sizing in _detect_ui_scale()).
     "show_token_count": False,
     "show_provider_pill": True,
 }

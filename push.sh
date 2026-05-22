@@ -31,7 +31,7 @@ HTTPS_REMOTE="https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
 BRANCH="${KALI_BRANCH:-main}"
 
 REQUIRED=(kali.py kali_core.py kali_persona.py install.sh README.md LICENSE)
-OPTIONAL=(kali-dragon.svg kali.desktop kali-ollama.service push.sh .gitignore)
+OPTIONAL=(org.thepriest.kali.svg kali-dragon.svg org.thepriest.kali.desktop kali-ollama.service push.sh .gitignore)
 
 # ── pre-flight ───────────────────────────────────────────────────
 command -v git >/dev/null || fatal "git not installed (sudo apt install git)"
