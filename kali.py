@@ -29,6 +29,7 @@ from kali_core import (
     OllamaBackend, GroqBackend, BackendRouter, ChatStore, Chat, Message,
     load_settings, save_settings, log,
     tool_read_file, tool_list_dir, tool_run_command, tool_system_info,
+    tool_write_file, make_edit_diff,
     tool_check_updates, tool_recent_downloads, tool_service_status,
     tool_journal_tail, tool_disk_usage, tool_processes,
     tool_network_status, tool_find_file,
@@ -712,6 +713,122 @@ class ProposedCommandWidget(Gtk.Box):
             log(f"cmd copy failed: {e}")
 
 
+class ProposedEditWidget(Gtk.Box):
+    """A file edit Kali wants to make, shown as an advisory card with a
+    compact diff.  Nothing is written until the operator clicks Apply.
+
+    Mirrors ProposedCommandWidget's flow exactly — same one-shot button
+    discipline, same host callback shape — so it rides the existing
+    confirm-then-execute gate rather than a new bypass.  on_apply is
+    called with (path, content, self) when the operator approves.
+    """
+    def __init__(self, path: str, content: str,
+                 diff_lines: Optional[List[str]] = None,
+                 added: int = 0, removed: int = 0,
+                 is_new: bool = False, truncated: bool = False,
+                 explanation: str = "",
+                 on_apply: Optional[Callable[[str, str, Any], None]] = None):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.add_css_class("cmd-card")
+        self.path = path
+        self.content = content
+        self._on_apply = on_apply
+
+        # Header: title + a +adds/-removes badge
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.add_css_class("cmd-card-header")
+        verb = "PROPOSED NEW FILE" if is_new else "PROPOSED EDIT"
+        title = Gtk.Label(label=f"✎  {verb}", xalign=0.0)
+        title.add_css_class("cmd-card-title")
+        title.set_hexpand(True)
+        header.append(title)
+        badge = Gtk.Label(label=f"+{added} −{removed}")
+        badge.add_css_class("risk-badge")
+        # Reuse the risk colour classes: a big change reads as higher risk.
+        badge.add_css_class("high" if (added + removed) > 60
+                            else "medium" if (added + removed) > 8
+                            else "low")
+        badge.set_valign(Gtk.Align.CENTER)
+        header.append(badge)
+        self.append(header)
+
+        # Target path
+        path_lbl = Gtk.Label(label=path, xalign=0.0)
+        path_lbl.add_css_class("cmd-text")
+        path_lbl.set_wrap(True)
+        path_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        path_lbl.set_selectable(True)
+        self.append(path_lbl)
+
+        # Compact diff body in a monospace, scrollable view
+        if diff_lines:
+            sw = Gtk.ScrolledWindow()
+            sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+            sw.set_hexpand(True)
+            tv = Gtk.TextView()
+            tv.set_editable(False)
+            tv.set_cursor_visible(False)
+            tv.set_monospace(True)
+            tv.set_wrap_mode(Gtk.WrapMode.NONE)
+            buf = tv.get_buffer()
+            # colour-tag added / removed lines so the diff reads at a glance
+            t_add = buf.create_tag("add", foreground="#a6e3a1")
+            t_del = buf.create_tag("del", foreground="#f38ba8")
+            t_hdr = buf.create_tag("hdr", foreground="#89b4fa")
+            for i, line in enumerate(diff_lines):
+                start = buf.get_end_iter()
+                buf.insert(start, (line + "\n"))
+                # re-grab iters for the line we just inserted
+                end = buf.get_end_iter()
+                ls = buf.get_iter_at_line(i)
+                if isinstance(ls, tuple):           # GTK4 returns (ok, iter)
+                    ls = ls[1]
+                if line.startswith("+") and not line.startswith("+++"):
+                    buf.apply_tag(t_add, ls, end)
+                elif line.startswith("-") and not line.startswith("---"):
+                    buf.apply_tag(t_del, ls, end)
+                elif line.startswith("@@") or line.startswith(("+++", "---")):
+                    buf.apply_tag(t_hdr, ls, end)
+            sw.set_child(tv)
+            self.append(sw)
+        if truncated:
+            more = Gtk.Label(label="…diff truncated — full content applies on Apply",
+                             xalign=0.0)
+            more.add_css_class("cmd-explain")
+            self.append(more)
+
+        if explanation:
+            exp = _make_wrap_label()
+            exp.add_css_class("cmd-explain")
+            try:
+                exp.set_markup(text_to_pango(explanation))
+            except Exception:
+                exp.set_text(explanation)
+            self.append(exp)
+
+        # Buttons
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.apply_btn = Gtk.Button(label="Apply")
+        self.apply_btn.add_css_class("cmd-run-btn")
+        self.apply_btn.connect("clicked", self._on_apply_clicked)
+        btn_row.append(self.apply_btn)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        btn_row.append(spacer)
+        self.append(btn_row)
+
+    def _on_apply_clicked(self, _btn):
+        if self._on_apply is None:
+            return
+        self.apply_btn.set_sensitive(False)
+        self.apply_btn.set_label("Applying…")
+        self._on_apply(self.path, self.content, self)
+
+    def reset_apply_button(self):
+        self.apply_btn.set_sensitive(True)
+        self.apply_btn.set_label("Apply")
+
+
 class Avatar(Gtk.Label):
     """A small circular avatar with initials or symbol."""
     def __init__(self, kind: str = "user"):
@@ -917,17 +1034,38 @@ class MessageWidget(Gtk.Box):
         if self.role == "assistant":
             try:
                 for call in parse_tool_calls(text):
-                    if call.name != "propose":
-                        continue
-                    cmd = (call.args.get("command")
-                           or call.args.get("cmd") or "").strip()
-                    if not cmd:
-                        continue
-                    self._blocks_container.append(ProposedCommandWidget(
-                        cmd,
-                        explanation=str(call.args.get("explanation", "")),
-                        risk=str(call.args.get("risk", "medium")),
-                        on_run=self._on_run_command))
+                    if call.name == "propose":
+                        cmd = (call.args.get("command")
+                               or call.args.get("cmd") or "").strip()
+                        if not cmd:
+                            continue
+                        self._blocks_container.append(ProposedCommandWidget(
+                            cmd,
+                            explanation=str(call.args.get("explanation", "")),
+                            risk=str(call.args.get("risk", "medium")),
+                            on_run=self._on_run_command))
+                    elif call.name in ("propose_edit", "write_file"):
+                        # An edit proposal renders as a diff card.  It NEVER
+                        # writes on its own — the operator's Apply click is
+                        # the approval, and tool_write_file still enforces
+                        # the parse-check + backup + immutable-guardrail net.
+                        epath = (call.args.get("path") or "").strip()
+                        econtent = call.args.get("content")
+                        if not epath or econtent is None:
+                            continue
+                        econtent = str(econtent)
+                        try:
+                            d = make_edit_diff(epath, econtent)
+                        except Exception:
+                            d = {"ok": False}
+                        self._blocks_container.append(ProposedEditWidget(
+                            epath, econtent,
+                            diff_lines=d.get("diff") if d.get("ok") else None,
+                            added=d.get("added", 0), removed=d.get("removed", 0),
+                            is_new=d.get("is_new", False),
+                            truncated=d.get("truncated", False),
+                            explanation=str(call.args.get("explanation", "")),
+                            on_apply=self._run_proposed_edit))
             except Exception as e:
                 log(f"propose render failed: {e}")
 
@@ -2246,9 +2384,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _execute_tool_calls(self, calls):
         call = calls[0]
-        # `propose` is advisory and never executes — if one slips through,
-        # just end the turn so the card stands on its own.
-        if call.name == "propose":
+        # `propose` and `propose_edit` are advisory — the card (command or
+        # diff) already rendered and carries its own Run/Apply button.
+        # They never execute here; if one slips through, end the turn so
+        # the card stands on its own.
+        if call.name in ("propose", "propose_edit", "write_file"):
             self._finish_turn_cleanup()
             return
         # Always write to the chat this turn was started in, not whichever
@@ -2264,6 +2404,16 @@ class MainWindow(Adw.ApplicationWindow):
                                 f"⚙ tool: {call.name}({json.dumps(call.args)})",
                                 meta={"kind": "call"})
 
+        # Models drift and sometimes emit non-numeric values for numeric
+        # args ("fifteen", null, "15.5", {}).  A bare int() on those raises
+        # and kills the whole tool turn — coerce safely and fall back to
+        # the default instead.
+        def _safe_int(v, default):
+            try:
+                return int(float(v))   # tolerates "15", 15, "15.5"
+            except (TypeError, ValueError):
+                return default
+
         dispatch = {
             "read_file":         lambda a: self._tool_read_file(a.get("path", "")),
             "list_dir":          lambda a: self._tool_list_dir(a.get("path", ".")),
@@ -2272,16 +2422,16 @@ class MainWindow(Adw.ApplicationWindow):
             "system_info":       lambda a: self._tool_simple(tool_system_info),
             "disk_usage":        lambda a: self._tool_simple(tool_disk_usage),
             "processes":         lambda a: self._tool_simple(
-                lambda: tool_processes(int(a.get("top_n", 15)))),
+                lambda: tool_processes(_safe_int(a.get("top_n", 15), 15))),
             "network_status":    lambda a: self._tool_simple(tool_network_status),
             "recent_downloads":  lambda a: self._tool_simple(
-                lambda: tool_recent_downloads(int(a.get("limit", 20)))),
+                lambda: tool_recent_downloads(_safe_int(a.get("limit", 20), 20))),
             "check_updates":     lambda a: self._tool_simple(tool_check_updates),
             "service_status":    lambda a: self._tool_simple(
                 lambda: tool_service_status(a.get("name"))),
             "journal_tail":      lambda a: self._tool_simple(
                 lambda: tool_journal_tail(
-                    int(a.get("lines", 50)), a.get("unit"))),
+                    _safe_int(a.get("lines", 50), 50), a.get("unit"))),
             "run":               lambda a: self._tool_run(
                 a.get("command", ""), a.get("reason", "")),
             "audit":             lambda a: self._tool_audit(),
@@ -2293,8 +2443,10 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._feed_tool_result(f"Unknown tool '{call.name}'.")
 
-    def _feed_tool_result(self, result_text, display_text=None):
-        # Route to the chat this turn was started in.
+    def _feed_tool_result(self, result_text):
+        # Route to the chat this turn was started in.  Resolved from
+        # streaming_chat_id; if the turn was torn down (stop / delete)
+        # it's None and we fall back to the current chat.
         chat_id = self.streaming_chat_id or self.current_chat_id
         self.store.add_message(chat_id, "user",
                                 f"<tool_result>\n{result_text}\n</tool_result>",
@@ -2342,8 +2494,7 @@ class MainWindow(Adw.ApplicationWindow):
         body = r["content"]
         header = (f"file: {r['path']} ({r['size']} bytes"
                   f"{' truncated' if r['truncated'] else ''})")
-        self._feed_tool_result(f"{header}\n\n{body}",
-                                f"{header}\n\n{body[:2000]}")
+        self._feed_tool_result(f"{header}\n\n{body}")
 
     def _tool_list_dir(self, path):
         def _bg():
@@ -2374,6 +2525,52 @@ class MainWindow(Adw.ApplicationWindow):
         # Reached only when the model emits <tool name="run"> after the
         # operator approved.  Goes through the same gate as the card.
         self._execute_command(command, reason)
+
+    def _run_proposed_edit(self, path, content, card=None):
+        """Called when the operator clicks Apply on a proposed-edit card.
+        The click IS the approval.  Mirrors _run_proposed_command: set up
+        a turn context, write the file (with the parse-check + backup net
+        in tool_write_file), then feed the result back so Kali confirms.
+
+        A file write is the same kind of action as a command — it goes
+        through the same confirm-by-clicking gate.  We surface a sudo
+        prompt only if the write lands somewhere the user can't write,
+        in which case we tell Kali to retry via `sudo tee` rather than
+        silently failing."""
+        if not path:
+            if card is not None:
+                card.reset_apply_button()
+            return
+        if self._is_busy():
+            self._show_toast("Busy — let the current task finish or stop it.")
+            if card is not None:
+                card.reset_apply_button()
+            return
+        self._stop_requested = False
+        if self.current_chat_id is None:
+            self._new_chat()
+        self.streaming_chat_id = self.current_chat_id
+        self._tool_chain_depth = 0
+        self._set_working(True, "writing file…")
+        self._set_send_mode(True)
+
+        def _bg():
+            r = tool_write_file(path, content)
+            if r.get("ok"):
+                parts = [f"wrote {r['path']} ({r['size']} bytes)"]
+                if r.get("created"):
+                    parts.append("(new file created)")
+                if r.get("backup"):
+                    parts.append(f"backup: {r['backup']}")
+                if r.get("is_python"):
+                    parts.append("Python syntax was checked before writing. "
+                                 "If this was a core Kali file, relaunch to "
+                                 "load the new code.")
+                out = "\n".join(parts)
+            else:
+                out = f"write failed for {path}\nerror: {r.get('error')}"
+            GLib.idle_add(self._feed_tool_result, out)
+        threading.Thread(target=_bg, daemon=True).start()
 
     def _run_proposed_command(self, command, explanation="", card=None):
         """Called when the operator clicks Run on a proposed-command card.
@@ -2414,14 +2611,33 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         # Long-running ops (package work, scans, builds) need more than the
-        # old hard 60s or they time out mid-apt and look broken.
-        low = command.lower()
-        if any(k in low for k in ("apt", "dpkg", "upgrade", "dist-upgrade",
-                                  "install", "nmap", "make", "pip ",
-                                  "git clone", "rsync", "dd ")):
-            timeout = 1800   # 30 min
-        else:
-            timeout = 120
+        # old hard 60s or they time out mid-apt and look broken.  Match on
+        # the actual COMMAND TOKENS, not raw substrings — the old `k in low`
+        # check false-matched "make" inside "cmake", "install" inside any
+        # path containing it, "dd " inside "add ", etc., handing trivial
+        # commands a needless 30-min window.
+        long_cmds = {"apt", "apt-get", "dpkg", "nmap", "make", "pip", "pip3",
+                     "rsync", "dd", "git", "wget", "curl", "docker"}
+        long_words = {"upgrade", "dist-upgrade", "install"}  # subcommands
+        # Split on shell separators, then take the leading token of each
+        # simple command (skipping leading VAR=val assignments and sudo).
+        tokens = re.split(r'[\n;&|]+', command.lower())
+        is_long = False
+        for seg in tokens:
+            words = seg.split()
+            i = 0
+            while i < len(words) and ("=" in words[i] or words[i] == "sudo"):
+                i += 1
+            if i >= len(words):
+                continue
+            head = os.path.basename(words[i])   # strip any path prefix
+            if head in long_cmds:
+                is_long = True
+                break
+            if any(w in long_words for w in words[i:]):
+                is_long = True
+                break
+        timeout = 1800 if is_long else 120
 
         def run_bg(password=None):
             def _bg():

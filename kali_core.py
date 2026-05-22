@@ -798,6 +798,239 @@ def tool_read_file(path: str, max_bytes: int = 80_000) -> Dict[str, Any]:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def make_edit_diff(path: str, new_content: str,
+                   context: int = 3) -> Dict[str, Any]:
+    """Build a COMPACT preview of what writing `new_content` to `path`
+    would change, for the confirmation card.  Returns the changed
+    hunks only (not the whole file) plus line-count deltas, so the
+    operator sees exactly what moves without scrolling a wall of text.
+
+    This performs NO write — it's purely advisory, computed when the
+    model proposes an edit so the card can show a real diff.
+    """
+    import difflib
+    rp = os.path.realpath(os.path.expanduser(path))
+    is_new = not os.path.exists(rp)
+    old = ""
+    if not is_new:
+        try:
+            with open(rp, "r", encoding="utf-8", errors="replace") as f:
+                old = f.read()
+        except Exception as e:
+            return {"ok": False, "error": f"can't read target: {e}"}
+
+    old_lines = old.splitlines()
+    new_lines = new_content.splitlines()
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=("(new file)" if is_new else "current"),
+        tofile="proposed", n=context, lineterm=""))
+    added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+
+    # Cap the rendered diff so a huge rewrite doesn't make an unreadable
+    # card.  If it's enormous, summarise instead of dumping everything.
+    MAX_DIFF_LINES = 80
+    truncated = len(diff) > MAX_DIFF_LINES
+    shown = diff[:MAX_DIFF_LINES]
+
+    return {"ok": True, "path": rp, "is_new": is_new,
+            "added": added, "removed": removed,
+            "diff": shown, "truncated": truncated,
+            "is_python": rp.endswith(".py")}
+
+
+def _extract_guardrail_blocks(text: str) -> List[str]:
+    """Return the protected text of every GUARDRAIL block in `text`.
+
+    A block is the content strictly BETWEEN a line containing the opening
+    marker ("GUARDRAIL" but not "END GUARDRAIL") and the next line
+    containing "END GUARDRAIL".  Matched line-by-line rather than with a
+    single regex, so cosmetic divider characters around the markers don't
+    throw it off.  Returned text is stripped for comparison.
+    """
+    blocks: List[str] = []
+    lines = text.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        up = lines[i].upper()
+        is_open = ("GUARDRAIL" in up) and ("END GUARDRAIL" not in up)
+        if is_open:
+            body: List[str] = []
+            j = i + 1
+            closed = False
+            while j < n:
+                if "END GUARDRAIL" in lines[j].upper():
+                    closed = True
+                    break
+                body.append(lines[j])
+                j += 1
+            if closed:
+                blocks.append("\n".join(body).strip())
+                i = j + 1
+                continue
+        i += 1
+    return blocks
+
+
+# Files whose guardrail blocks are protected from self-edits.  Keyed by
+# basename so it matches wherever the install lives.
+_PROTECTED_FILES = {"kali_persona.py"}
+
+
+def _check_protected_regions(realpath: str, new_content: str
+                             ) -> Optional[Dict[str, Any]]:
+    """If `realpath` is a protected file, refuse the write unless every
+    GUARDRAIL block in it is preserved byte-for-byte.  Returns a refusal
+    result dict on violation, or None if the write is allowed.
+
+    Rules enforced:
+      · the proposed content must contain the SAME number of guardrail
+        blocks as the file on disk (can't drop one),
+      · each block's protected text must be unchanged (can't alter one),
+      · a brand-new file may introduce blocks freely (nothing to protect
+        yet) — protection only binds once a block exists on disk.
+    """
+    base = os.path.basename(realpath)
+    if base not in _PROTECTED_FILES:
+        return None
+    if not os.path.exists(realpath):
+        return None  # new file; no existing guardrails to protect
+    try:
+        with open(realpath, "r", encoding="utf-8", errors="replace") as f:
+            current = f.read()
+    except Exception:
+        # If we can't read the original to compare, fail safe: refuse.
+        return {"ok": False, "path": realpath,
+                "error": "refused: cannot read current file to verify its "
+                         "guardrail block is preserved. Nothing was written.",
+                "guardrail_violation": True}
+
+    cur_blocks = _extract_guardrail_blocks(current)
+    new_blocks = _extract_guardrail_blocks(new_content)
+
+    if not cur_blocks:
+        return None  # file has no protected block to guard
+
+    if len(new_blocks) < len(cur_blocks):
+        return {"ok": False, "path": realpath,
+                "error": "refused: this edit removes a GUARDRAIL block. "
+                         "The safety block is immutable and cannot be "
+                         "deleted by a self-edit. Nothing was written.",
+                "guardrail_violation": True}
+
+    for i, cur in enumerate(cur_blocks):
+        if i >= len(new_blocks) or new_blocks[i] != cur:
+            return {"ok": False, "path": realpath,
+                    "error": "refused: this edit alters a protected "
+                             "GUARDRAIL block. That block is immutable — "
+                             "edit anything else in the file, but the "
+                             "guardrails stay exactly as they are. "
+                             "Nothing was written.",
+                    "guardrail_violation": True}
+    return None
+
+
+def tool_write_file(path: str, content: str,
+                    make_backup: bool = True) -> Dict[str, Any]:
+    """Write `content` to `path` — the executing half of a self-edit.
+
+    Reached ONLY after the operator approves the diff card.  Safety net,
+    in order:
+      1. If the target is a .py file, parse-check the NEW content with
+         ast BEFORE touching disk.  A syntax error means we refuse the
+         write entirely — this is what stops Kali from rewriting its own
+         source into something that won't launch.
+      2. Back up the existing file to backups/ with a timestamp so any
+         change is one copy away from being undone.
+      3. Write atomically (temp file in the same dir, then os.replace),
+         so a crash mid-write can't leave a half-written, truncated
+         source file.
+    """
+    try:
+        rp = os.path.realpath(os.path.expanduser(path))
+
+        # 1. parse-check python before we risk the existing file
+        if rp.endswith(".py"):
+            import ast
+            try:
+                ast.parse(content)
+            except SyntaxError as e:
+                return {"ok": False, "path": rp,
+                        "error": f"refused: new content has a Python syntax "
+                                 f"error (line {e.lineno}: {e.msg}). "
+                                 f"Nothing was written.",
+                        "syntax_error": True}
+
+        # 1b. PROTECTED-REGION GUARD.  Any block delimited by the
+        # GUARDRAIL markers below is immutable: a write that adds,
+        # removes, or alters the text inside it is refused outright,
+        # before any backup or write happens.  This is what makes the
+        # safety block tamper-proof rather than just visually labelled —
+        # Kali can rewrite anything else in its own source, but it
+        # physically cannot edit (or delete) its own guardrails.
+        guard = _check_protected_regions(rp, content)
+        if guard is not None:
+            return guard
+
+        parent = os.path.dirname(rp)
+        if parent and not os.path.isdir(parent):
+            return {"ok": False, "path": rp,
+                    "error": f"parent directory does not exist: {parent}"}
+
+        # 2. back up the original if it exists
+        backup_path = None
+        existed = os.path.exists(rp)
+        if existed and make_backup:
+            try:
+                BACKUP_DIR = DATA_DIR / "backups"
+                BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                base = os.path.basename(rp)
+                backup_path = str(BACKUP_DIR / f"{base}.{stamp}.bak")
+                shutil.copy2(rp, backup_path)
+            except Exception as e:
+                # A failed backup is a hard stop — we don't overwrite
+                # something we couldn't first preserve.
+                return {"ok": False, "path": rp,
+                        "error": f"refused: could not back up the original "
+                                 f"before writing ({e}). Nothing was written."}
+
+        # 3. atomic write
+        tmp = rp + ".kali-tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        # preserve the original mode/owner where possible
+        if existed:
+            try:
+                st = os.stat(rp)
+                os.chmod(tmp, st.st_mode)
+            except Exception:
+                pass
+        os.replace(tmp, rp)
+
+        size = os.path.getsize(rp)
+        log(f"wrote {rp} ({size} bytes)"
+            + (f", backup {backup_path}" if backup_path else ""))
+        return {"ok": True, "path": rp, "size": size,
+                "created": not existed, "backup": backup_path,
+                "is_python": rp.endswith(".py")}
+    except PermissionError:
+        return {"ok": False, "path": path,
+                "error": f"permission denied: {path} "
+                         f"(a root-owned path needs the `run` tool with "
+                         f"`sudo tee` instead)"}
+    except Exception as e:
+        return {"ok": False, "path": path,
+                "error": f"{type(e).__name__}: {e}"}
+
+
 def tool_list_dir(path: str = ".") -> Dict[str, Any]:
     try:
         rp = os.path.expanduser(path)
