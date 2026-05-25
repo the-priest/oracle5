@@ -4,7 +4,7 @@
 
 **A local, loyal AI assistant that lives on your machine.**
 
-Groq cloud primary. Ollama local fallback. Full OS access.
+Groq / SiliconFlow / Novita / GitHub Models / Google AI Studio cloud, or Ollama local. Full OS access.
 Reads files. Watches services. Audits security. Runs commands with your permission.
 
 </div>
@@ -48,7 +48,9 @@ She's built for one operator — you — and she behaves like it. No corporate g
 └────┘    └─────────┘
 ```
 
-**Provider routing.** Kali prefers Groq when online and a key is configured. Falls back to Ollama when offline, when Groq rate-limits or errors, or when you toggle "Prefer Groq" off in Settings. The active provider is shown as a pill in the header.
+**Provider routing.** Kali can use any of several cloud providers — Groq, SiliconFlow, Novita AI, GitHub Models, and Google AI Studio — and falls back to local Ollama when the chosen provider is offline, unconfigured, or erroring. Pick the active provider in Settings → Backends → Provider routing, and set a per-provider API key and model in that provider's group. Toggle "Prefer cloud over local" off to always use Ollama. The active provider is shown as a pill in the header.
+
+Every cloud provider speaks the OpenAI-compatible chat-completions API, so each one has the same controls: an API key field, a model picker (biggest/best models listed first), and a refresh button (⟳) that pulls the provider's live model catalogue from its API. If a configured model ID has gone stale, Kali transparently re-fetches the live list and retries with a real model rather than erroring out.
 
 ## Install
 
@@ -117,11 +119,21 @@ GROQ_API_KEY=gsk_...      ./install.sh    # preset, no prompt
 KALI_REPO=user/fork  KALI_BRANCH=dev  ./install.sh
 ```
 
-## Get a Groq API key
+## Get an API key
 
-Free, fast, the primary path: <https://console.groq.com>
+Kali works with several cloud providers. You only need a key for the one(s) you want to use — set the active provider and its key in Settings → Backends.
 
-Sign up, create a key (`gsk_...`), paste it into Settings → Backends → Groq → API key. Or pass it during install via the prompt or `GROQ_API_KEY=...`. Stored locally in `~/.config/kali/settings.json` only — never leaves your machine except in API calls to Groq.
+| Provider | Get a key | Notes |
+| -------- | --------- | ----- |
+| Groq | <https://console.groq.com/keys> | Fast, generous free tier. Key looks like `gsk_...` |
+| SiliconFlow | <https://cloud.siliconflow.com/account/ak> | Big open models (DeepSeek, Qwen, Kimi) |
+| Novita AI | <https://novita.ai/settings/key-management> | Cheap GPU inference, many open models |
+| GitHub Models | <https://github.com/settings/personal-access-tokens> | Free tier. Use a fine-grained PAT with the `models:read` scope |
+| Google AI Studio | <https://aistudio.google.com/apikey> | Gemini models, free tier |
+
+Paste a key into that provider's group in Settings → Backends. Keys are stored locally in `~/.config/kali/settings.json` only — they never leave your machine except in API calls to the provider you're using. Groq can also be preset during install via the prompt or `GROQ_API_KEY=...`.
+
+Not sure which model to pick? Each provider's model dropdown lists the biggest/best models first. Hit the ⟳ button next to it to fetch that provider's live catalogue once your key is set.
 
 ## What Kali can do on your system
 
@@ -166,7 +178,7 @@ Off by default. Enable in Settings → Behaviour → Watcher. Surfaces events as
 - **Modify her own code.** Hardcoded off. She can read her own source if you ask, but she can't write to it. This is deliberate.
 - **Persist state outside the chat DB and settings file.** No hidden side-channels.
 - **Reach the internet directly.** The Groq backend is for text generation only. She doesn't browse, scrape, or open URLs unless you do it through her by running `curl` via the `run` tool with your confirmation.
-- **Run as root without you.** She can't. Privileged commands are proposed, never auto-run, and when you approve one she asks for your sudo password in the confirmation dialog. The password is validated against `sudo` and used to cache the credential for that command; it is never written to disk, the log, the environment, or the command's own input.
+- **Run as root without you.** She can't. Privileged commands are proposed, never auto-run, and when you approve one she asks for your sudo password in the confirmation dialog. The password is validated against `sudo` and used to cache the credential for that command; it is never written to disk or the log. The primary path feeds it once on `sudo -S`'s stdin and the command itself sees EOF. On hardened sudoers configs (`timestamp_timeout=0`) Kali falls back to `SUDO_ASKPASS`, which briefly places the password in the environment of that single sudo call only — readable in principle via `/proc/<pid>/environ` by your own user while the call runs, then cleared. In both paths the password never reaches the command's own stdin.
 
 ## File layout
 

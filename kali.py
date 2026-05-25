@@ -12,21 +12,19 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Pango", "1.0")
-from gi.repository import Gtk, Adw, GLib, Gdk, Gio, Pango, GdkPixbuf, GObject  # noqa
+from gi.repository import Gtk, Adw, GLib, Gdk, Gio, Pango, GObject  # noqa
 
 import sys
 import os
 import re
 import json
-import time
-import html
 import threading
 import datetime
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 
 from kali_core import (
-    OllamaBackend, GroqBackend, BackendRouter, ChatStore, Chat, Message,
+    OllamaBackend, GroqBackend, OpenAICompatBackend, BackendRouter,
+    ChatStore, Chat,
     load_settings, save_settings, log,
     tool_read_file, tool_list_dir, tool_run_command, tool_system_info,
     tool_write_file, make_edit_diff,
@@ -35,9 +33,9 @@ from kali_core import (
     tool_network_status, tool_find_file,
     run_security_audit, format_audit_for_chat,
     run_network_scan, format_scan_for_chat,
-    parse_tool_calls, strip_tool_calls, ToolCall,
+    parse_tool_calls, strip_tool_calls,
     is_online, is_sensitive_path, command_needs_sudo, Watcher,
-    DATA_DIR, GROQ_LIB_OK, OLLAMA_DEFAULT_MODEL, GROQ_DEFAULT_MODEL,
+    PROVIDERS, PROVIDERS_BY_KEY,
 )
 from kali_persona import (
     build_system_prompt, assemble_messages, title_from_first_message,
@@ -45,7 +43,7 @@ from kali_persona import (
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -414,6 +412,54 @@ passwordentry {
 .quick-chip:hover {
     background-color: #45475a;
     color: #f5e0dc;
+}
+
+/* ===== Terminal log panel ===== */
+
+.terminal-panel {
+    background-color: #0a0a12;
+    border-top: 2px solid #313244;
+}
+
+.terminal-panel-header {
+    background-color: #11111b;
+    border-bottom: 1px solid #313244;
+    padding: 6px 12px;
+    min-height: 40px;
+}
+
+.terminal-panel-title {
+    color: #a6e3a1;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.terminal-log-view {
+    background-color: transparent;
+    color: #a6e3a1;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 14px;
+    padding: 8px 12px;
+}
+
+.terminal-toggle-btn {
+    background-color: #1e1e2e;
+    color: #6c7086;
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 13px;
+    min-height: 32px;
+}
+.terminal-toggle-btn:hover {
+    background-color: #313244;
+    color: #a6e3a1;
+}
+.terminal-toggle-btn.active {
+    background-color: #11111b;
+    color: #a6e3a1;
+    border: 1px solid #a6e3a1;
 }
 
 /* ===== Banner for watcher events ===== */
@@ -1243,33 +1289,40 @@ class SettingsDialog(Adw.PreferencesDialog):
         page.set_title("Backends")
         page.set_icon_name("network-server-symbolic")
 
-        gg = Adw.PreferencesGroup()
-        gg.set_title("Groq (cloud, primary)")
-        gg.set_description(
-            "Used when online + API key set.  Get a free key at "
-            "console.groq.com.")
+        # ── Provider routing (which cloud provider is active) ──
+        self._model_rows = {}   # provider_key -> (combo_row, [names])
 
-        self.groq_key_row = Adw.PasswordEntryRow()
-        self.groq_key_row.set_title("API key")
-        self.groq_key_row.set_text(parent.settings.get("groq_api_key", ""))
-        self.groq_key_row.connect("changed", self._on_groq_key)
-        gg.add(self.groq_key_row)
+        rg = Adw.PreferencesGroup()
+        rg.set_title("Provider routing")
+        rg.set_description(
+            "Pick the cloud provider to use when online.  Falls back to "
+            "local Ollama when it's unavailable.")
 
-        self.groq_model_row = Adw.EntryRow()
-        self.groq_model_row.set_title("Default model")
-        self.groq_model_row.set_text(parent.settings.get("groq_model",
-                                                          GROQ_DEFAULT_MODEL))
-        self.groq_model_row.connect("changed", self._on_groq_model)
-        gg.add(self.groq_model_row)
+        self.active_provider_row = Adw.ComboRow()
+        self.active_provider_row.set_title("Active provider")
+        prov_labels = [p.label for p in PROVIDERS]
+        self.active_provider_row.set_model(Gtk.StringList.new(prov_labels))
+        cur_key = parent.settings.get("active_provider", "groq")
+        prov_keys = [p.key for p in PROVIDERS]
+        if cur_key in prov_keys:
+            self.active_provider_row.set_selected(prov_keys.index(cur_key))
+        self.active_provider_row.connect("notify::selected",
+                                         self._on_active_provider)
+        rg.add(self.active_provider_row)
 
-        self.prefer_groq_row = Adw.SwitchRow()
-        self.prefer_groq_row.set_title("Prefer Groq over Ollama")
-        self.prefer_groq_row.set_subtitle(
-            "When online with a key.  Off = always use local.")
-        self.prefer_groq_row.set_active(parent.settings.get("prefer_groq", True))
-        self.prefer_groq_row.connect("notify::active", self._on_prefer_groq)
-        gg.add(self.prefer_groq_row)
-        page.add(gg)
+        self.prefer_cloud_row = Adw.SwitchRow()
+        self.prefer_cloud_row.set_title("Prefer cloud over local")
+        self.prefer_cloud_row.set_subtitle(
+            "When online with a key.  Off = always use local Ollama.")
+        self.prefer_cloud_row.set_active(
+            parent.settings.get("prefer_cloud", True))
+        self.prefer_cloud_row.connect("notify::active", self._on_prefer_cloud)
+        rg.add(self.prefer_cloud_row)
+        page.add(rg)
+
+        # ── One group per cloud provider: key + model picker ──
+        for spec in PROVIDERS:
+            self._build_provider_group(page, spec, parent)
 
         og = Adw.PreferencesGroup()
         og.set_title("Ollama (local, fallback)")
@@ -1467,6 +1520,60 @@ class SettingsDialog(Adw.PreferencesDialog):
 
     # ── helpers ────────────────────────────────────────────
 
+    def _build_provider_group(self, page, spec, parent):
+        """Build a Settings group for one cloud provider: API key entry,
+        a model picker (curated big-first list, refreshable from the live
+        catalogue), and a 'get a key' link."""
+        g = Adw.PreferencesGroup()
+        g.set_title(spec.label)
+        g.set_description(spec.blurb)
+
+        # API key
+        key_row = Adw.PasswordEntryRow()
+        key_row.set_title("API key")
+        key_row.set_text(parent.settings.get(f"{spec.key}_api_key", ""))
+        key_row.connect(
+            "changed",
+            lambda row, k=spec.key: self._on_provider_key(k, row.get_text()))
+        g.add(key_row)
+
+        # Model picker
+        model_row = Adw.ComboRow()
+        model_row.set_title("Model")
+        model_row.set_subtitle("Biggest first. Use ⟳ to fetch live list.")
+        names = list(spec.chain)
+        saved = parent.settings.get(f"{spec.key}_model", spec.default_model)
+        if saved and saved not in names:
+            names.insert(0, saved)   # keep a custom/old selection visible
+        model_row.set_model(Gtk.StringList.new(names))
+        if saved in names:
+            model_row.set_selected(names.index(saved))
+        model_row.connect(
+            "notify::selected",
+            lambda row, _ps, k=spec.key: self._on_provider_model(k, row))
+        self._model_rows[spec.key] = (model_row, names)
+
+        # Refresh-from-API button lives as a suffix on the model row
+        refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        refresh_btn.set_valign(Gtk.Align.CENTER)
+        refresh_btn.add_css_class("flat")
+        refresh_btn.set_tooltip_text("Fetch available models from the API")
+        refresh_btn.connect(
+            "clicked",
+            lambda _b, k=spec.key: self._fetch_live_models(k))
+        model_row.add_suffix(refresh_btn)
+        g.add(model_row)
+
+        # Get-a-key link
+        link_row = Adw.ActionRow()
+        link_row.set_title("Get an API key")
+        link_btn = Gtk.LinkButton.new_with_label(spec.key_url, "Open")
+        link_btn.set_valign(Gtk.Align.CENTER)
+        link_row.add_suffix(link_btn)
+        g.add(link_row)
+
+        page.add(g)
+
     def _set(self, key, value):
         self.win.settings[key] = value
         save_settings(self.win.settings)
@@ -1483,20 +1590,74 @@ class SettingsDialog(Adw.PreferencesDialog):
             self.ollama_model_row.set_selected(names.index(current))
         self.ollama_model_row.connect("notify::selected", self._on_ollama_model)
 
-    def _on_groq_key(self, row):
-        self.win.settings["groq_api_key"] = row.get_text()
+    def _on_provider_key(self, key, text):
+        self.win.settings[f"{key}_api_key"] = text
         save_settings(self.win.settings)
-        self.win.groq.set_api_key(row.get_text())
+        backend = self.win.cloud.get(key)
+        if backend is not None and hasattr(backend, "set_api_key"):
+            backend.set_api_key(text)
         self.win.update_status_pills()
 
-    def _on_groq_model(self, row):
-        self.win.settings["groq_model"] = row.get_text()
-        save_settings(self.win.settings)
+    def _on_provider_model(self, key, row):
+        m = row.get_model()
+        idx = row.get_selected()
+        if m and 0 <= idx < m.get_n_items():
+            name = m.get_string(idx)
+            if name and not name.startswith("("):
+                self.win.settings[f"{key}_model"] = name
+                save_settings(self.win.settings)
 
-    def _on_prefer_groq(self, row, _ps):
-        self.win.settings["prefer_groq"] = row.get_active()
+    def _on_active_provider(self, row, _ps):
+        idx = row.get_selected()
+        keys = [p.key for p in PROVIDERS]
+        if 0 <= idx < len(keys):
+            self.win.settings["active_provider"] = keys[idx]
+            save_settings(self.win.settings)
+            self.win.update_status_pills()
+
+    def _on_prefer_cloud(self, row, _ps):
+        self.win.settings["prefer_cloud"] = row.get_active()
         save_settings(self.win.settings)
         self.win.update_status_pills()
+
+    def _fetch_live_models(self, key):
+        """Query the provider's live /models catalogue on a background
+        thread and repopulate its picker.  Falls back silently to the
+        curated chain on any failure."""
+        backend = self.win.cloud.get(key)
+        if backend is None or not hasattr(backend, "list_models_live"):
+            self.win._show_toast("This provider has no live model list.")
+            return
+        spec = PROVIDERS_BY_KEY.get(key)
+        self.win._show_toast(f"Fetching {spec.label if spec else key} models…")
+
+        def _bg():
+            ids = backend.list_models_live()
+            GLib.idle_add(lambda: self._apply_live_models(key, ids) or False)
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _apply_live_models(self, key, ids):
+        entry = self._model_rows.get(key)
+        if not entry:
+            return
+        model_row, _old = entry
+        if not ids:
+            self.win._show_toast("No models returned — keeping defaults.")
+            return
+        # Keep the currently-saved model visible even if the live list
+        # omits it (some catalogues page or filter).
+        saved = self.win.settings.get(f"{key}_model", "")
+        names = list(ids)
+        if saved and saved not in names:
+            names.insert(0, saved)
+        model_row.set_model(Gtk.StringList.new(names))
+        if saved in names:
+            model_row.set_selected(names.index(saved))
+        self._model_rows[key] = (model_row, names)
+        spec = PROVIDERS_BY_KEY.get(key)
+        self.win._show_toast(
+            f"{spec.label if spec else key}: {len(ids)} models loaded.")
 
     def _on_ollama_model(self, row, _ps):
         m = row.get_model()
@@ -1579,8 +1740,19 @@ class MainWindow(Adw.ApplicationWindow):
         self.app = app
         self.settings = load_settings()
         self.ollama = OllamaBackend()
-        self.groq = GroqBackend(self.settings.get("groq_api_key", ""))
-        self.router = BackendRouter(self.groq, self.ollama, self.settings)
+        # Build one backend per registered cloud provider.  Groq keeps its
+        # library-backed backend; everything else rides the generic
+        # OpenAI-compatible backend.  Keyed by provider id for the router.
+        self.cloud: Dict[str, Any] = {}
+        for spec in PROVIDERS:
+            key = self.settings.get(f"{spec.key}_api_key", "")
+            if spec.engine == "groq":
+                self.cloud[spec.key] = GroqBackend(key)
+            else:
+                self.cloud[spec.key] = OpenAICompatBackend(spec, key)
+        # Back-compat alias used in a few spots.
+        self.groq = self.cloud.get("groq")
+        self.router = BackendRouter(self.cloud, self.ollama, self.settings)
         self.store = ChatStore()
         self.watcher = Watcher(self.settings, self._on_watcher_event)
 
@@ -1817,7 +1989,72 @@ class MainWindow(Adw.ApplicationWindow):
         main.append(self.msg_scroll)
 
         main.append(self._build_input_area())
+
+        # Terminal log panel — hidden by default, shown when user taps the log button
+        self._terminal_visible = False
+        self.terminal_panel = self._build_terminal_panel()
+        self.terminal_panel.set_visible(False)
+        main.append(self.terminal_panel)
+
         return main
+
+    def _build_terminal_panel(self):
+        """Live terminal output panel — shows exactly what tools are doing."""
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        panel.add_css_class("terminal-panel")
+        panel.set_size_request(-1, _scaled(220, floor=140))
+
+        # Header row
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.add_css_class("terminal-panel-header")
+
+        title_lbl = Gtk.Label(label="▶ TERMINAL LOG", xalign=0.0)
+        title_lbl.add_css_class("terminal-panel-title")
+        title_lbl.set_hexpand(True)
+        header.append(title_lbl)
+
+        self.terminal_status_lbl = Gtk.Label(label="idle", xalign=1.0)
+        self.terminal_status_lbl.add_css_class("tool-indicator-label")
+        header.append(self.terminal_status_lbl)
+
+        clear_btn = Gtk.Button(label="clear")
+        clear_btn.add_css_class("terminal-toggle-btn")
+        clear_btn.connect("clicked", self._clear_terminal_log)
+        header.append(clear_btn)
+
+        close_btn = Gtk.Button.new_from_icon_name("window-close-symbolic")
+        close_btn.add_css_class("icon-button")
+        close_btn.connect("clicked", self._toggle_terminal_panel)
+        header.append(close_btn)
+
+        panel.append(header)
+
+        # Log view
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        sw.set_vexpand(True)
+        sw.set_kinetic_scrolling(True)
+
+        self.terminal_log_view = Gtk.TextView()
+        self.terminal_log_view.set_editable(False)
+        self.terminal_log_view.set_cursor_visible(False)
+        self.terminal_log_view.set_monospace(True)
+        self.terminal_log_view.set_wrap_mode(Gtk.WrapMode.CHAR)
+        self.terminal_log_view.add_css_class("terminal-log-view")
+        self.terminal_log_buf = self.terminal_log_view.get_buffer()
+
+        # Colour tags
+        self.terminal_log_buf.create_tag("cmd",    foreground="#f9e2af", weight=700)
+        self.terminal_log_buf.create_tag("stdout", foreground="#a6e3a1")
+        self.terminal_log_buf.create_tag("stderr", foreground="#f38ba8")
+        self.terminal_log_buf.create_tag("info",   foreground="#89b4fa")
+        self.terminal_log_buf.create_tag("error",  foreground="#f38ba8", weight=700)
+        self.terminal_log_buf.create_tag("ok",     foreground="#a6e3a1", weight=700)
+        self.terminal_log_buf.create_tag("dim",    foreground="#6c7086")
+
+        sw.set_child(self.terminal_log_view)
+        panel.append(sw)
+        return panel
 
     def _build_input_area(self):
         area = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1861,6 +2098,13 @@ class MainWindow(Adw.ApplicationWindow):
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         actions.append(spacer)
+
+        # Terminal log toggle button
+        self.terminal_toggle_btn = Gtk.Button(label="⌨ log")
+        self.terminal_toggle_btn.add_css_class("terminal-toggle-btn")
+        self.terminal_toggle_btn.set_tooltip_text("Show/hide live terminal log")
+        self.terminal_toggle_btn.connect("clicked", self._toggle_terminal_panel)
+        actions.append(self.terminal_toggle_btn)
 
         area.append(actions)
 
@@ -1922,9 +2166,14 @@ class MainWindow(Adw.ApplicationWindow):
         return True
 
     def update_status_pills(self, online: Optional[bool] = None):
-        # Provider pill
-        if self.groq.is_available() and self.settings.get("prefer_groq", True):
-            self.provider_pill.set_text("GROQ")
+        # Provider pill — reflects the active cloud provider when usable,
+        # otherwise local Ollama, otherwise nothing.
+        backend, key = self.router.active_cloud()
+        prefer_cloud = self.settings.get("prefer_cloud", True)
+        if prefer_cloud and backend is not None and backend.is_available():
+            label = PROVIDERS_BY_KEY[key].label.upper() \
+                if key in PROVIDERS_BY_KEY else key.upper()
+            self.provider_pill.set_text(label)
             for c in ("ollama", "offline", "error"):
                 self.provider_pill.remove_css_class(c)
             self.provider_pill.add_css_class("groq")
@@ -2076,7 +2325,7 @@ class MainWindow(Adw.ApplicationWindow):
         wrap.set_margin_start(24)
         wrap.set_margin_end(24)
 
-        title = Gtk.Label(label=f"Hello, Priest.")
+        title = Gtk.Label(label="Hello, Priest.")
         title.add_css_class("empty-state-title")
         wrap.append(title)
 
@@ -2247,6 +2496,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.working_label.set_text(label)
             self.working_spinner.start()
             self.working_row.set_visible(True)
+            self.terminal_log(f"── {label}", "dim")
         else:
             self.working_spinner.stop()
             self.working_row.set_visible(False)
@@ -2257,9 +2507,13 @@ class MainWindow(Adw.ApplicationWindow):
             self._finish_turn_cleanup()
             return
 
-        if not self.ollama.is_running() and not self.groq.is_available():
+        active_backend, _key = self.router.active_cloud()
+        cloud_ok = (self.settings.get("prefer_cloud", True)
+                    and active_backend is not None
+                    and active_backend.is_available())
+        if not self.ollama.is_running() and not cloud_ok:
             self._show_toast(
-                "No backend.  Set a Groq key in Settings, or start Ollama.")
+                "No backend.  Add an API key in Settings, or start Ollama.")
             self.streaming_chat_id = None
             self._tool_chain_depth = 0
             self._set_working(False)
@@ -2323,6 +2577,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.streaming_thread.start()
         self._set_send_mode(True)
         self._set_working(True, "thinking…")
+        self.terminal_log("── stream start", "dim")
 
     def _on_stream_token(self, tok):
         if self.streaming_msg_widget:
@@ -2341,6 +2596,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.update_message(self.streaming_msg_db_id, final)
         calls = parse_tool_calls(final)
         cancelled = meta.get("cancelled") or self._stop_requested
+        self.terminal_log(f"── stream done{' (cancelled)' if cancelled else ''}", "dim")
         # `propose` is advisory — it renders a command card (already done by
         # finish_streaming → set_content) and must NOT execute.  Only the
         # sensing/run tools are executable here.
@@ -2357,6 +2613,7 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _on_stream_error(self, err):
+        self.terminal_log(f"✗ stream error: {err}", "error")
         if self.streaming_msg_widget:
             # Preserve any tokens that already streamed in.  Wiping the
             # widget and replacing with just the error text discards
@@ -2439,8 +2696,10 @@ class MainWindow(Adw.ApplicationWindow):
         }
         fn = dispatch.get(call.name)
         if fn:
+            self.terminal_log(f"→ tool: {call.name}({json.dumps(call.args, separators=(',',':'))[:80]})", "info")
             fn(call.args)
         else:
+            self.terminal_log(f"✗ unknown tool: {call.name}", "error")
             self._feed_tool_result(f"Unknown tool '{call.name}'.")
 
     def _feed_tool_result(self, result_text):
@@ -2464,10 +2723,17 @@ class MainWindow(Adw.ApplicationWindow):
     def _tool_simple(self, fn):
         def _bg():
             try:
+                GLib.idle_add(lambda: self.terminal_log(f"→ running {fn.__name__ if hasattr(fn, '__name__') else 'tool'}…", "info") or False)
                 result = fn()
                 text = json.dumps(result, indent=2, default=str)
+                GLib.idle_add(lambda: self.terminal_log("✓ done", "ok") or False)
             except Exception as e:
-                text = f"error: {e}"
+                # Capture the message NOW — `e` is deleted when this except
+                # block exits, but the idle_add lambda runs later in the main
+                # loop, so referencing `e` inside it raises NameError.
+                msg = str(e)
+                text = f"error: {msg}"
+                GLib.idle_add(lambda m=msg: self.terminal_log(f"✗ {m}", "error") or False)
             GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
@@ -2498,26 +2764,32 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _tool_list_dir(self, path):
         def _bg():
+            self.terminal_log(f"→ list_dir {path}", "info")
             r = tool_list_dir(path)
             if not r.get("ok"):
                 text = f"list_dir error: {r.get('error')}"
+                self.terminal_log(f"✗ {r.get('error')}", "error")
             else:
                 lines = [f"dir: {r['path']}", ""]
                 for e in r["entries"]:
                     sz = "" if e["is_dir"] else f"  ({e['size']}B)"
                     lines.append(f"  {e['name']}{sz}")
                 text = "\n".join(lines)
+                self.terminal_log(f"✓ {len(r['entries'])} entries", "ok")
             GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
     def _tool_find_file(self, pattern, search_path):
         def _bg():
+            self.terminal_log(f"→ find {pattern} in {search_path}", "info")
             r = tool_find_file(pattern, search_path)
             if r.get("ok"):
                 text = (f"find {pattern} in {r['search_path']}: "
                         f"{r['count']} hit(s)\n" + "\n".join(r["found"]))
+                self.terminal_log(f"✓ {r['count']} found", "ok")
             else:
                 text = f"find_file error: {r.get('error')}"
+                self.terminal_log(f"✗ {r.get('error')}", "error")
             GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
@@ -2641,22 +2913,32 @@ class MainWindow(Adw.ApplicationWindow):
 
         def run_bg(password=None):
             def _bg():
+                self.terminal_log_and_show(f"$ {command}", "cmd")
                 r = tool_run_command(command, timeout=timeout,
                                      sudo_password=password)
                 if r.get("ok"):
                     parts = [f"$ {command}", f"(rc={r['rc']})"]
                     if r["stdout"]:
+                        # Stream stdout to terminal log line by line
+                        for line in r["stdout"].splitlines()[:80]:
+                            GLib.idle_add(lambda l=line: self.terminal_log(l, "stdout") or False)
                         parts.append(r["stdout"])
                     if r["stderr"]:
+                        for line in r["stderr"].splitlines()[:20]:
+                            GLib.idle_add(lambda l=line: self.terminal_log(l, "stderr") or False)
                         parts.append(f"stderr:\n{r['stderr']}")
                     if r.get("sudo_auth_failed"):
                         parts.append(
                             "\n[note] sudo could not authenticate "
                             "non-interactively. The password may have been "
                             "wrong, or sudo timed out its cached credential.")
+                        self.terminal_log("✗ sudo auth failed", "error")
+                    else:
+                        self.terminal_log(f"✓ rc={r['rc']}", "ok" if r['rc'] == 0 else "error")
                     out = "\n".join(parts)
                 else:
                     out = f"$ {command}\nerror: {r.get('error')}"
+                    self.terminal_log(f"✗ {r.get('error')}", "error")
                 GLib.idle_add(self._feed_tool_result, out)
             threading.Thread(target=_bg, daemon=True).start()
 
@@ -2682,10 +2964,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._show_toast("Auditing…")
         def _bg():
             try:
-                audit = run_security_audit()
+                def _prog(title, done, total):
+                    self.terminal_log(f"[{done}/{total}] {title}", "info")
+                audit = run_security_audit(on_progress=_prog)
                 text = format_audit_for_chat(audit)
+                self.terminal_log(f"✓ audit complete — grade {audit['grade']}", "ok")
             except Exception as e:
                 text = f"audit failed: {type(e).__name__}: {e}"
+                self.terminal_log(f"✗ audit failed: {e}", "error")
             GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
@@ -2693,10 +2979,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._show_toast("Scanning network…")
         def _bg():
             try:
-                scan = run_network_scan(cidr)
+                def _prog(msg):
+                    self.terminal_log(f"nmap: {msg}", "info")
+                scan = run_network_scan(cidr, on_progress=_prog)
                 text = format_scan_for_chat(scan)
+                if scan.get("ok"):
+                    self.terminal_log(f"✓ scan complete — {len(scan.get('hosts', []))} hosts", "ok")
+                else:
+                    self.terminal_log(f"✗ scan failed: {scan.get('error')}", "error")
             except Exception as e:
                 text = f"scan failed: {type(e).__name__}: {e}"
+                self.terminal_log(f"✗ {e}", "error")
             GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
@@ -2965,6 +3258,60 @@ class MainWindow(Adw.ApplicationWindow):
                           if banner.get_parent() else None) or False)
             return False
         GLib.idle_add(_ui)
+
+    # ── terminal log panel ──────────────────────────────────────
+
+    def _toggle_terminal_panel(self, *_):
+        self._terminal_visible = not self._terminal_visible
+        self.terminal_panel.set_visible(self._terminal_visible)
+        if self._terminal_visible:
+            self.terminal_toggle_btn.add_css_class("active")
+            GLib.idle_add(self._terminal_scroll_to_bottom)
+        else:
+            self.terminal_toggle_btn.remove_css_class("active")
+
+    def _clear_terminal_log(self, *_):
+        self.terminal_log_buf.set_text("")
+        self.terminal_status_lbl.set_text("cleared")
+
+    def _terminal_scroll_to_bottom(self):
+        adj = self.terminal_log_view.get_parent()
+        if adj is None:
+            return False
+        try:
+            # Walk up to find the ScrolledWindow
+            parent = self.terminal_log_view.get_parent()
+            while parent and not isinstance(parent, Gtk.ScrolledWindow):
+                parent = parent.get_parent()
+            if parent:
+                a = parent.get_vadjustment()
+                if a:
+                    a.set_value(a.get_upper())
+        except Exception:
+            pass
+        return False
+
+    def terminal_log(self, text: str, kind: str = "info"):
+        """Append a line to the terminal log panel.  Thread-safe via GLib.idle_add."""
+        def _ui():
+            try:
+                buf = self.terminal_log_buf
+                end = buf.get_end_iter()
+                buf.insert_with_tags_by_name(end, text + "\n", kind)
+                self.terminal_status_lbl.set_text(text[:40].strip() or "…")
+                GLib.idle_add(self._terminal_scroll_to_bottom)
+            except Exception:
+                pass
+            return False
+        GLib.idle_add(_ui)
+
+    def terminal_log_and_show(self, text: str, kind: str = "cmd"):
+        """Log and auto-reveal the panel so the operator can see live output."""
+        if not self._terminal_visible:
+            self._terminal_visible = True
+            self.terminal_panel.set_visible(True)
+            self.terminal_toggle_btn.add_css_class("active")
+        self.terminal_log(text, kind)
 
     # ── toast ──────────────────────────────────────────────────
 

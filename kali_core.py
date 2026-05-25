@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import json
 import time
 import shutil
@@ -32,7 +31,7 @@ import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (List, Dict, Tuple, Optional, Any, Callable,
-                    Iterator, Protocol)
+                    Protocol)
 
 try:
     from groq import Groq
@@ -76,6 +75,115 @@ GROQ_FALLBACK_CHAIN = [
 ]
 OLLAMA_DEFAULT_MODEL = "llama3.2:1b"
 
+# ─────────────────────────────────────────────────────────────────────
+# CLOUD PROVIDER REGISTRY
+#
+# Every cloud provider below SiliconFlow speaks the OpenAI-compatible
+# /chat/completions schema, so one generic backend (OpenAICompatBackend)
+# drives all of them — no extra Python dependencies, just urllib + SSE.
+# Groq keeps its own library-backed backend (it's what the operator
+# already relies on) but is registered here too so the UI treats every
+# provider uniformly.
+#
+# Each chain is ordered BIGGEST/BEST FIRST.  The chain is both the
+# default model (chain[0]) and the in-provider fallback order: if the
+# selected model is rate-limited or unavailable, the backend walks down
+# the chain before giving up.  Model IDs drift over time — every
+# provider also supports live discovery (GET /models) and the model
+# field in Settings is editable, so a stale ID here is never fatal.
+# Verified against each provider's docs, May 2026.
+# ─────────────────────────────────────────────────────────────────────
+
+SILICONFLOW_CHAIN = [
+    "deepseek-ai/DeepSeek-V3",
+    "Qwen/Qwen3-235B-A22B-Instruct",
+    "moonshotai/Kimi-K2-Instruct",
+    "deepseek-ai/DeepSeek-R1",
+    "Qwen/Qwen3-32B",
+    "Qwen/Qwen2.5-72B-Instruct",
+]
+
+NOVITA_CHAIN = [
+    "qwen/qwen3-coder-480b-a35b-instruct",
+    "deepseek/deepseek-v3",
+    "openai/gpt-oss-120b",
+    "moonshotai/kimi-k2.5",
+    "meta-llama/llama-3.3-70b-instruct",
+]
+
+GITHUB_CHAIN = [
+    "openai/gpt-4.1",
+    "openai/gpt-4o",
+    "deepseek/DeepSeek-R1",
+    "meta/Llama-3.3-70B-Instruct",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4o-mini",
+]
+
+GOOGLE_CHAIN = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+
+
+@dataclass
+class ProviderSpec:
+    """Static description of a cloud provider.  Drives both routing and
+    the Settings UI — add an entry here and a provider appears wired-up
+    everywhere with no other edits."""
+    key: str              # internal id and settings prefix, e.g. "groq"
+    label: str            # UI display name, e.g. "Groq"
+    blurb: str            # one-line description for Settings
+    base_url: str         # OpenAI-compatible API root (no trailing slash)
+    chain: List[str]      # models, biggest/best first
+    key_url: str          # where the operator gets a key
+    engine: str = "openai_compat"   # "openai_compat" or "groq"
+    extra_headers: Optional[Dict[str, str]] = None
+
+    @property
+    def default_model(self) -> str:
+        return self.chain[0] if self.chain else ""
+
+
+# Ordered: Groq first (the established default), then the rest.
+PROVIDERS: List[ProviderSpec] = [
+    ProviderSpec(
+        key="groq", label="Groq", engine="groq",
+        blurb="Fast cloud inference. Free key at console.groq.com.",
+        base_url="https://api.groq.com/openai/v1",
+        chain=list(GROQ_FALLBACK_CHAIN),
+        key_url="https://console.groq.com/keys"),
+    ProviderSpec(
+        key="siliconflow", label="SiliconFlow",
+        blurb="OpenAI-compatible. Big open models (DeepSeek, Qwen, Kimi).",
+        base_url="https://api.siliconflow.com/v1",
+        chain=SILICONFLOW_CHAIN,
+        key_url="https://cloud.siliconflow.com/account/ak"),
+    ProviderSpec(
+        key="novita", label="Novita AI",
+        blurb="OpenAI-compatible. Cheap GPU inference, many open models.",
+        base_url="https://api.novita.ai/v3/openai",
+        chain=NOVITA_CHAIN,
+        key_url="https://novita.ai/settings/key-management"),
+    ProviderSpec(
+        key="github", label="GitHub Models",
+        blurb="Free tier. Use a GitHub PAT with the models:read scope.",
+        base_url="https://models.github.ai/inference",
+        chain=GITHUB_CHAIN,
+        key_url="https://github.com/settings/personal-access-tokens"),
+    ProviderSpec(
+        key="google", label="Google AI Studio",
+        blurb="Gemini models. Free key at aistudio.google.com.",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        chain=GOOGLE_CHAIN,
+        key_url="https://aistudio.google.com/apikey"),
+]
+
+PROVIDERS_BY_KEY: Dict[str, ProviderSpec] = {p.key: p for p in PROVIDERS}
+CLOUD_PROVIDER_KEYS = [p.key for p in PROVIDERS]
+
 # Paths that need explicit operator confirmation even in agent mode
 SENSITIVE_PATHS = (
     "/etc/shadow", "/etc/gshadow", "/etc/sudoers",
@@ -100,10 +208,18 @@ def log(msg: str) -> None:
 # ═════════════════════════════════════════════════════════════════════
 
 DEFAULT_SETTINGS = {
-    # Backends
-    "groq_api_key": "",
-    "groq_model": GROQ_DEFAULT_MODEL,
-    "prefer_groq": True,
+    # ── Provider routing ──
+    # Which cloud provider to use when online + configured.  Falls back
+    # to Ollama (local) when this provider has no key, is offline, or
+    # errors.  "prefer_cloud" off = always use local Ollama.
+    "active_provider": "groq",
+    "prefer_cloud": True,
+
+    # Per-provider API key + selected model.  One pair per registered
+    # provider; populated from DEFAULT_SETTINGS so a fresh install has
+    # every field present.  (Built programmatically below.)
+
+    # ── Local fallback ──
     "ollama_model": OLLAMA_DEFAULT_MODEL,
 
     # Generation
@@ -133,6 +249,12 @@ DEFAULT_SETTINGS = {
     "show_provider_pill": True,
 }
 
+# Add a key + model slot for every registered provider so the schema is
+# always complete (e.g. "groq_api_key", "groq_model", "novita_api_key"…).
+for _p in PROVIDERS:
+    DEFAULT_SETTINGS.setdefault(f"{_p.key}_api_key", "")
+    DEFAULT_SETTINGS.setdefault(f"{_p.key}_model", _p.default_model)
+
 
 def load_settings() -> Dict[str, Any]:
     if SETTINGS_JSON.exists():
@@ -141,10 +263,29 @@ def load_settings() -> Dict[str, Any]:
                 data = json.load(f)
             merged = dict(DEFAULT_SETTINGS)
             merged.update(data)
+            _migrate_settings(merged, data)
             return merged
         except Exception:
             pass
     return dict(DEFAULT_SETTINGS)
+
+
+def _migrate_settings(merged: Dict[str, Any], raw: Dict[str, Any]) -> None:
+    """In-place upgrade of settings loaded from an older Kali/Oracle
+    install so adding multi-provider support never silently drops the
+    operator's existing Groq config."""
+    # Old single-provider builds used `prefer_groq`; the new schema uses
+    # `prefer_cloud` + `active_provider`.  Honour the old value if the
+    # new one wasn't explicitly written.
+    if "prefer_cloud" not in raw and "prefer_groq" in raw:
+        merged["prefer_cloud"] = bool(raw.get("prefer_groq"))
+    # If a Groq key exists but no provider was chosen, keep Groq active.
+    if "active_provider" not in raw:
+        merged["active_provider"] = "groq"
+    # Guard against an active_provider that no longer exists in the
+    # registry (e.g. a renamed/removed provider) — fall back to groq.
+    if merged.get("active_provider") not in PROVIDERS_BY_KEY:
+        merged["active_provider"] = "groq"
 
 
 def save_settings(settings: Dict[str, Any]) -> None:
@@ -496,22 +637,226 @@ class GroqBackend:
         on_error(f"groq exhausted all models: {last_err}")
 
 
-class BackendRouter:
-    """Picks Groq if online & configured, else Ollama."""
+def _join_url(base: str, path: str) -> str:
+    """Join an API base with a path, tolerating a trailing slash on the
+    base (Google's endpoint is commonly written with one)."""
+    return base.rstrip("/") + "/" + path.lstrip("/")
 
-    def __init__(self, groq: GroqBackend, ollama: OllamaBackend,
+
+class OpenAICompatBackend:
+    """Generic backend for any OpenAI-compatible /chat/completions API.
+
+    Drives SiliconFlow, Novita, GitHub Models, and Google AI Studio with
+    no extra dependencies — just urllib + Server-Sent-Events parsing,
+    the same toolkit the Ollama backend already uses.  Mirrors
+    GroqBackend's behaviour: biggest-model-first fallback chain, and a
+    hard stop on mid-stream fallback so two models' output never gets
+    spliced together on screen.
+    """
+
+    def __init__(self, spec: "ProviderSpec", api_key: str = ""):
+        self.spec = spec
+        self.name = spec.key
+        self.api_key = api_key or ""
+        self.base_url = spec.base_url
+        self.fallback_chain = list(spec.chain)
+        self.extra_headers = dict(spec.extra_headers or {})
+
+    def set_api_key(self, key: str) -> None:
+        self.api_key = key or ""
+
+    def is_available(self) -> bool:
+        return bool(self.api_key) and is_online()
+
+    def _headers(self) -> Dict[str, str]:
+        h = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        h.update(self.extra_headers)
+        return h
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """Curated chain — instant, no network.  Used as the default
+        Settings list."""
+        return [{"name": m} for m in self.fallback_chain]
+
+    def list_models_live(self, timeout: float = 8.0) -> List[str]:
+        """Query the provider's /models endpoint for the real, current
+        catalogue.  Returns [] on any failure so the caller can fall
+        back to the curated chain."""
+        if not self.api_key:
+            return []
+        try:
+            req = urllib.request.Request(
+                _join_url(self.base_url, "models"),
+                headers=self._headers())
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read())
+            items = data.get("data", data) if isinstance(data, dict) else data
+            ids = []
+            for it in items or []:
+                mid = it.get("id") if isinstance(it, dict) else None
+                if mid:
+                    ids.append(mid)
+            return sorted(ids)
+        except Exception as e:
+            log(f"{self.name} list_models_live failed: {e}")
+            return []
+
+    def stream_chat(self, model, messages, on_token, on_done, on_error,
+                    options=None, cancel_event=None) -> None:
+        if not self.api_key:
+            on_error(f"{self.name} not configured (no API key)")
+            return
+        opts = options or {}
+        body_base = {
+            "messages": messages,
+            "temperature": opts.get("temperature", 0.7),
+            "top_p": opts.get("top_p", 0.9),
+            "max_tokens": opts.get("max_tokens", 2048),
+            "stream": True,
+        }
+        order = [model] + [m for m in self.fallback_chain if m != model]
+        last_err = None
+        any_tokens_emitted = False
+        recovered_live = False   # only refresh the live catalogue once
+        url = _join_url(self.base_url, "chat/completions")
+
+        idx = 0
+        while idx < len(order):
+            attempt_model = order[idx]
+            idx += 1
+            if cancel_event and cancel_event.is_set():
+                on_done({"cancelled": True, "text": "", "backend": self.name})
+                return
+            payload = dict(body_base)
+            payload["model"] = attempt_model
+            try:
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url, data=data, headers=self._headers())
+                parts: List[str] = []
+                with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as r:
+                    for raw in r:
+                        if cancel_event and cancel_event.is_set():
+                            on_done({"cancelled": True,
+                                     "text": "".join(parts),
+                                     "backend": self.name,
+                                     "model": attempt_model})
+                            return
+                        line = raw.decode("utf-8", "replace").strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        chunk = line[len("data:"):].strip()
+                        if chunk == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(chunk)
+                        except Exception:
+                            continue
+                        choices = obj.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        tok = delta.get("content") or ""
+                        if tok:
+                            parts.append(tok)
+                            any_tokens_emitted = True
+                            on_token(tok)
+                on_done({
+                    "text": "".join(parts),
+                    "backend": self.name,
+                    "model": attempt_model,
+                    "cancelled": False,
+                })
+                return
+            except urllib.error.HTTPError as e:
+                # Read the body once for diagnostics + retry decisions.
+                try:
+                    detail = e.read().decode("utf-8", "replace")[:300]
+                except Exception:
+                    detail = ""
+                last_err = f"HTTP {e.code}: {detail or e.reason}"
+                if any_tokens_emitted:
+                    on_error(f"{self.name} {last_err} mid-stream")
+                    return
+                # 429 = rate limit; 404/400 = bad/unavailable model.
+                if e.code in (404, 400) and not recovered_live:
+                    # The hardcoded model ID may be stale.  Pull the live
+                    # catalogue ONCE and append any unseen models so the
+                    # next attempt uses a real, currently-served model
+                    # instead of another guess.
+                    recovered_live = True
+                    live = self.list_models_live()
+                    new = [m for m in live if m not in order]
+                    if new:
+                        log(f"{self.name} {attempt_model} -> {e.code}; "
+                            f"recovered {len(new)} live models")
+                        order.extend(new)
+                        continue
+                if e.code in (429, 404, 400, 502, 503):
+                    log(f"{self.name} {attempt_model} -> {e.code}, next")
+                    continue
+                if e.code in (401, 403):
+                    on_error(f"{self.name} auth failed (HTTP {e.code}) — "
+                             f"check the API key")
+                    return
+                on_error(f"{self.name} {last_err}")
+                return
+            except urllib.error.URLError as e:
+                last_err = f"connection: {getattr(e, 'reason', e)}"
+                if any_tokens_emitted:
+                    on_error(f"{self.name} {last_err} mid-stream")
+                    return
+                on_error(f"{self.name} {last_err}")
+                return
+            except Exception as e:
+                last_err = f"{type(e).__name__}: {e}"
+                if any_tokens_emitted:
+                    on_error(f"{self.name} {last_err} mid-stream")
+                    return
+                continue
+
+        on_error(f"{self.name} exhausted all models: {last_err}")
+
+
+class BackendRouter:
+    """Routes to the active cloud provider when online & configured,
+    otherwise to local Ollama.  Holds one backend per registered cloud
+    provider plus the local Ollama backend."""
+
+    def __init__(self, cloud: Dict[str, Backend], ollama: OllamaBackend,
                  settings: Dict[str, Any]):
-        self.groq = groq
+        self.cloud = cloud            # {provider_key: backend}
         self.ollama = ollama
         self.settings = settings
+        # Back-compat: callers/tests that referenced router.groq directly
+        # still work.
+        self.groq = cloud.get("groq")
+
+    def active_cloud(self) -> Tuple[Optional[Backend], str]:
+        """Return (backend, provider_key) for the configured active
+        provider, or (None, key) if it isn't usable right now."""
+        key = self.settings.get("active_provider", "groq")
+        backend = self.cloud.get(key)
+        if backend is None:
+            backend = self.cloud.get("groq")
+            key = "groq"
+        return backend, key
 
     def pick(self) -> Tuple[Backend, str]:
         """Returns (backend, model_name)."""
-        if self.settings.get("prefer_groq", True) and self.groq.is_available():
-            return self.groq, self.settings.get("groq_model",
-                                                GROQ_DEFAULT_MODEL)
+        if self.settings.get("prefer_cloud", True):
+            backend, key = self.active_cloud()
+            if backend is not None and backend.is_available():
+                model = self.settings.get(
+                    f"{key}_model",
+                    PROVIDERS_BY_KEY[key].default_model
+                    if key in PROVIDERS_BY_KEY else "")
+                return backend, model
         return self.ollama, self.settings.get("ollama_model",
-                                              OLLAMA_DEFAULT_MODEL)
+                                               OLLAMA_DEFAULT_MODEL)
 
     def stream_chat(self, messages, on_token, on_done, on_error,
                     cancel_event=None) -> Tuple[str, str]:
@@ -530,14 +875,16 @@ class BackendRouter:
             emitted["any"] = True
             on_token(t)
 
-        # Wrap on_error so we can attempt Ollama fallback if Groq fails
-        # — but only when no tokens have made it to the UI yet.  Otherwise
-        # we'd splice two model outputs together.
+        # Wrap on_error so we can attempt Ollama fallback if a cloud
+        # provider fails — but only when no tokens have made it to the UI
+        # yet.  Otherwise we'd splice two model outputs together.
+        is_cloud = backend is not self.ollama
+
         def _on_err(err: str):
-            if (backend.name == "groq"
+            if (is_cloud
                     and not emitted["any"]
                     and self.ollama.is_running()):
-                log(f"groq failed ({err}) — falling back to ollama")
+                log(f"{backend.name} failed ({err}) — falling back to ollama")
                 self.ollama.stream_chat(
                     self.settings.get("ollama_model", OLLAMA_DEFAULT_MODEL),
                     messages, _on_tok, on_done, on_error, opts, cancel_event)

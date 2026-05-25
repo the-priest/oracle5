@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime
 import os
 import socket
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 
 # ═════════════════════════════════════════════════════════════════════
