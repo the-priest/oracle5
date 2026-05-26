@@ -1,92 +1,93 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Kali assistant icon.  Original geometric dragon-head mark — my own
-  stylised interpretation, NOT a copy of the official Kali Linux dragon
-  (which is OffSec's trademark).  White mark on a rounded dark tile so
-  it reads as a deliberate app icon on any panel/background, light or
-  dark.  To use a different icon, overwrite this file in place; the
-  .desktop entry resolves it by the theme name "org.thepriest.kali".
+  Kali assistant icon.  Original geometric dragon-head mark - my own
+  stylised interpretation in the Kali blue palette, NOT a copy of the
+  official Kali Linux dragon (which is OffSec's trademark).  Blue mark
+  on a rounded near-black tile so it reads as a deliberate first-party
+  tool icon on any panel.  To use a different icon, overwrite this file
+  in place; the .desktop entry resolves it by the theme name
+  "org.thepriest.kali".
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
 
-  <!-- Rounded tile background (Catppuccin Mocha base, matches the app) -->
-  <rect x="8" y="8" width="240" height="240" rx="52" ry="52" fill="#1e1e2e"/>
-  <rect x="8" y="8" width="240" height="240" rx="52" ry="52"
-        fill="none" stroke="#313244" stroke-width="2"/>
+  <defs>
+    <linearGradient id="blade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#5aa7ff"/>
+      <stop offset="0.55" stop-color="#367bf0"/>
+      <stop offset="1"    stop-color="#2563d6"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.42" r="0.62">
+      <stop offset="0" stop-color="#367bf0" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#367bf0" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
 
-  <!-- Dragon mark.  Cutouts use the tile colour so they read as holes. -->
-  <g fill="#f2f2f7" fill-rule="evenodd">
+  <rect x="8" y="8" width="240" height="240" rx="52" ry="52" fill="#0d0f12"/>
+  <rect x="8" y="8" width="240" height="240" rx="52" ry="52" fill="url(#halo)"/>
+  <rect x="9" y="9" width="238" height="238" rx="51" ry="51"
+        fill="none" stroke="#262b33" stroke-width="2"/>
+  <rect x="9" y="9" width="238" height="238" rx="51" ry="51"
+        fill="none" stroke="#367bf0" stroke-width="1" stroke-opacity="0.35"/>
 
-    <!-- Top crown -->
-    <polygon points="128,28 119,54 137,54"/>
+  <g fill="url(#blade)" fill-rule="evenodd"
+     stroke="#7dc0ff" stroke-width="0.6" stroke-opacity="0.5">
 
-    <!-- Left horn -->
-    <path d="M 119,54 L 92,47 L 83,56 L 69,49 L 62,59 L 48,52 L 41,64
-             L 30,59 L 27,75 L 37,79 L 30,87 L 42,91 L 37,99 L 51,101
-             L 48,110 L 62,108 L 60,119 L 76,113 L 85,104 L 96,92
-             L 105,79 L 116,69 Z"/>
+    <polygon points="128,26 118,54 138,54"/>
 
-    <!-- Right horn -->
-    <path d="M 137,54 L 164,47 L 173,56 L 187,49 L 194,59 L 208,52 L 215,64
-             L 226,59 L 229,75 L 219,79 L 226,87 L 214,91 L 219,99 L 205,101
-             L 208,110 L 194,108 L 196,119 L 180,113 L 171,104 L 160,92
-             L 151,79 L 140,69 Z"/>
+    <path d="M 118,54 L 90,46 L 80,56 L 65,48 L 57,60 L 42,52 L 35,66
+             L 24,60 L 22,78 L 33,82 L 25,91 L 38,95 L 32,104 L 48,106
+             L 44,116 L 60,113 L 57,125 L 75,117 L 86,107 L 98,93
+             L 108,79 L 117,69 Z"/>
 
-    <!-- Inner ear left -->
-    <path d="M 88,106 L 76,120 L 83,125 L 92,116 L 96,123 L 103,113 L 99,102 Z"/>
-    <!-- Inner ear right -->
-    <path d="M 168,106 L 180,120 L 173,125 L 164,116 L 160,123 L 153,113 L 157,102 Z"/>
+    <path d="M 138,54 L 166,46 L 176,56 L 191,48 L 199,60 L 214,52 L 221,66
+             L 232,60 L 234,78 L 223,82 L 231,91 L 218,95 L 224,104 L 208,106
+             L 212,116 L 196,113 L 199,125 L 181,117 L 170,107 L 158,93
+             L 148,79 L 139,69 Z"/>
 
-    <!-- Outer mane left -->
-    <path d="M 64,126 L 50,144 L 57,153 L 45,158 L 57,167 L 50,177 L 64,172
-             L 62,184 L 75,172 L 71,158 L 78,146 L 75,135 Z"/>
-    <!-- Outer mane right -->
-    <path d="M 192,126 L 206,144 L 199,153 L 211,158 L 199,167 L 206,177
-             L 192,172 L 194,184 L 181,172 L 185,158 L 178,146 L 181,135 Z"/>
+    <path d="M 86,104 L 73,119 L 81,125 L 90,115 L 95,123 L 103,112 L 98,100 Z"/>
+    <path d="M 170,104 L 183,119 L 175,125 L 166,115 L 161,123 L 153,112 L 158,100 Z"/>
 
-    <!-- Forehead shield -->
-    <path d="M 104,79 L 152,79 L 162,103 L 162,117 L 153,133 L 128,147
-             L 103,133 L 94,117 L 94,103 Z"/>
+    <path d="M 60,127 L 45,146 L 53,156 L 40,162 L 53,172 L 45,183 L 60,178
+             L 58,191 L 72,178 L 67,162 L 75,148 L 71,136 Z"/>
+    <path d="M 196,127 L 211,146 L 203,156 L 216,162 L 203,172 L 211,183
+             L 196,178 L 198,191 L 184,178 L 189,162 L 181,148 L 185,136 Z"/>
 
+    <path d="M 102,78 L 154,78 L 165,104 L 165,119 L 155,136 L 128,151
+             L 101,136 L 91,119 L 91,104 Z"/>
   </g>
 
-  <!-- Cutouts (carved features) painted in the tile colour -->
-  <g fill="#1e1e2e">
-    <!-- Third eye -->
-    <polygon points="128,90 121,104 128,118 135,104"/>
-    <!-- Eyes -->
-    <path d="M 104,114 L 120,121 L 120,126 L 115,126 L 104,121 Z"/>
-    <path d="M 152,114 L 136,121 L 136,126 L 141,126 L 152,121 Z"/>
+  <g fill="#0d0f12">
+    <polygon points="128,88 120,104 128,120 136,104"/>
+    <path d="M 101,115 L 119,123 L 119,129 L 113,128 L 101,122 Z"/>
+    <path d="M 155,115 L 137,123 L 137,129 L 143,128 L 155,122 Z"/>
   </g>
 
-  <g fill="#f2f2f7" fill-rule="evenodd">
-    <!-- Cheek left -->
-    <path d="M 84,126 L 74,140 L 81,150 L 93,145 L 98,135 L 93,128 Z"/>
-    <!-- Cheek right -->
-    <path d="M 172,126 L 182,140 L 175,150 L 163,145 L 158,135 L 163,128 Z"/>
-
-    <!-- Upper jaw -->
-    <path d="M 100,145 L 156,145 L 152,170 L 142,180 L 128,185 L 114,180
-             L 104,170 Z"/>
+  <g fill="#9fd0ff">
+    <polygon points="110,121 117,124 117,127 112,126"/>
+    <polygon points="146,121 139,124 139,127 144,126"/>
   </g>
 
-  <!-- Mouth cutout -->
-  <path fill="#1e1e2e" d="M 116,162 L 140,162 L 137,173 L 128,178 L 119,173 Z"/>
+  <g fill="url(#blade)" fill-rule="evenodd"
+     stroke="#7dc0ff" stroke-width="0.6" stroke-opacity="0.5">
+    <path d="M 82,127 L 71,142 L 79,152 L 92,147 L 97,136 L 92,128 Z"/>
+    <path d="M 174,127 L 185,142 L 177,152 L 164,147 L 159,136 L 164,128 Z"/>
+    <path d="M 98,148 L 158,148 L 154,174 L 143,184 L 128,189 L 113,184
+             L 102,174 Z"/>
+  </g>
 
-  <g fill="#f2f2f7" fill-rule="evenodd">
-    <!-- Side fangs left -->
-    <polygon points="81,150 70,184 84,176 89,156"/>
-    <polygon points="95,168 90,194 102,184 104,170"/>
-    <!-- Side fangs right -->
-    <polygon points="175,150 186,184 172,176 167,156"/>
-    <polygon points="161,168 166,194 154,184 152,170"/>
+  <path fill="#0d0f12" d="M 115,164 L 141,164 L 138,176 L 128,181 L 118,176 Z"/>
 
-    <!-- Lower beard -->
-    <path d="M 113,180 L 104,206 L 116,197 L 120,208 L 124,194 L 128,210
-             L 132,194 L 136,208 L 140,197 L 152,206 L 143,180 L 136,184
-             L 128,185 L 120,184 Z"/>
+  <g fill="url(#blade)" fill-rule="evenodd"
+     stroke="#7dc0ff" stroke-width="0.6" stroke-opacity="0.5">
+    <polygon points="79,152 67,188 82,179 87,157"/>
+    <polygon points="94,170 88,198 101,187 103,172"/>
+    <polygon points="177,152 189,188 174,179 169,157"/>
+    <polygon points="162,170 168,198 155,187 153,172"/>
 
-    <!-- Chin spike -->
-    <polygon points="124,194 128,224 132,194"/>
+    <path d="M 112,184 L 102,212 L 115,202 L 119,214 L 124,199 L 128,216
+             L 132,199 L 137,214 L 141,202 L 154,212 L 144,184 L 137,188
+             L 128,189 L 119,188 Z"/>
+
+    <polygon points="123,199 128,230 133,199"/>
   </g>
 </svg>

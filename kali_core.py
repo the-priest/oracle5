@@ -233,7 +233,7 @@ DEFAULT_SETTINGS = {
     "watcher_interval_minutes": 60,
 
     # UI
-    "theme": "mocha",
+    "theme": "kali",
     "ui_scale": 0,  # 0 = auto-detect; manual values 0.3 to 3.0
     "show_token_count": False,
     "show_provider_pill": True,

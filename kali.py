@@ -61,25 +61,82 @@ VERSION = "0.5.0"
 # to read on a phone screen without squinting.
 
 CSS = b"""
+/* =====================================================================
+   KALI THEME - modelled on the official Kali Linux desktop palette:
+   near-black surfaces, the Kali dragon-blue accent (#367bf0 / #4a9eff),
+   red for danger, monospace for headers and machine output.  Built to
+   read like a first-party Kali tool, not a pastel toy.
+   GTK CSS has no variables across rules, so the palette is inlined.
+
+   Palette:
+     bg base    #0d0f12   surfaces  #14171c / #1b1f26   line  #262b33
+     text       #d6dbe2   dim       #7d8794
+     accent     #367bf0   accent-hi #4a9eff   accent-dim rgba(54,123,240,.15)
+     ok/green   #2ecc71   warn      #f0a500   danger #e5484d
+   ===================================================================== */
+
+/* ===== Adwaita named-color overrides =====
+   libadwaita widgets (SwitchRow, SpinRow, ComboRow, AlertDialog buttons,
+   focus rings, selections, links) pull these named colours.  Without
+   overriding them every built-in control renders in GTK's stock blue or
+   the user's Plasma accent - which is exactly what made the UI look
+   inconsistent.  Retint them ALL to the Kali palette in one place. */
+
+@define-color accent_color              #4a9eff;
+@define-color accent_bg_color           #367bf0;
+@define-color accent_fg_color           #ffffff;
+
+@define-color destructive_color         #e5484d;
+@define-color destructive_bg_color      #e5484d;
+@define-color destructive_fg_color      #ffffff;
+
+@define-color success_color             #2ecc71;
+@define-color success_bg_color          #2ecc71;
+@define-color success_fg_color          #0d0f12;
+@define-color warning_color             #f0a500;
+@define-color warning_bg_color          #f0a500;
+@define-color warning_fg_color          #0d0f12;
+@define-color error_color               #e5484d;
+@define-color error_bg_color            #e5484d;
+@define-color error_fg_color            #ffffff;
+
+@define-color window_bg_color           #0d0f12;
+@define-color window_fg_color           #d6dbe2;
+@define-color view_bg_color             #14171c;
+@define-color view_fg_color             #d6dbe2;
+@define-color headerbar_bg_color        #14171c;
+@define-color headerbar_fg_color        #d6dbe2;
+@define-color headerbar_border_color    #262b33;
+@define-color popover_bg_color          #14171c;
+@define-color popover_fg_color          #d6dbe2;
+@define-color dialog_bg_color           #14171c;
+@define-color dialog_fg_color           #d6dbe2;
+@define-color card_bg_color             #1b1f26;
+@define-color card_fg_color             #d6dbe2;
+@define-color sidebar_bg_color          #0a0c0f;
+@define-color sidebar_fg_color          #d6dbe2;
+
+@define-color borders                   #262b33;
+
 /* ===== Base ===== */
 
 window, .background {
-    background-color: #1e1e2e;
-    color: #cdd6f4;
-    font-family: 'Cantarell', 'Inter', 'SF Pro Text', sans-serif;
+    background-color: #0d0f12;
+    color: #d6dbe2;
+    font-family: 'Inter', 'Cantarell', 'SF Pro Text', sans-serif;
 }
 
 headerbar {
-    background-color: #181825;
-    color: #cdd6f4;
-    border-bottom: 1px solid #313244;
+    background-color: #14171c;
+    color: #d6dbe2;
+    border-bottom: 1px solid #262b33;
     min-height: 56px;
     padding: 4px 8px;
 }
 
 .sidebar {
-    background-color: #11111b;
-    border-right: 1px solid #313244;
+    background-color: #0a0c0f;
+    border-right: 1px solid #262b33;
 }
 
 /* ===== App branding ===== */
@@ -87,70 +144,74 @@ headerbar {
 .app-title {
     font-size: 28px;
     font-weight: 900;
-    color: #cdd6f4;
-    letter-spacing: 0.5px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: #4a9eff;
+    letter-spacing: 1px;
 }
 .app-subtitle {
     font-size: 16px;
-    color: #6c7086;
+    color: #7d8794;
+    font-family: 'JetBrains Mono', monospace;
     margin-top: 2px;
 }
 
 .chat-title {
     font-size: 24px;
     font-weight: 700;
-    color: #cdd6f4;
+    color: #d6dbe2;
 }
 .chat-subtitle {
     font-size: 16px;
-    color: #7f849c;
+    color: #7d8794;
 }
 
 /* ===== Sidebar chat list ===== */
 
 .chat-row {
     background-color: transparent;
-    border-radius: 14px;
+    border-radius: 8px;
     padding: 20px 22px;
     margin: 6px 8px;
     min-height: 76px;
 }
 .chat-row:hover {
-    background-color: #1e1e2e;
+    background-color: #14171c;
 }
 .chat-row.selected, .chat-row:selected {
-    background-color: #313244;
+    background-color: #1b1f26;
+    border-left: 3px solid #367bf0;
 }
 .chat-row .title-line {
-    color: #cdd6f4;
+    color: #d6dbe2;
     font-weight: 600;
     font-size: 22px;
 }
 .chat-row .meta-line {
-    color: #7f849c;
+    color: #7d8794;
     font-size: 17px;
     margin-top: 4px;
 }
 .chat-row .pin-icon {
-    color: #f9e2af;
+    color: #4a9eff;
     font-size: 17px;
 }
 
 /* ===== Empty states ===== */
 
 .empty-state {
-    color: #585b70;
+    color: #5a626d;
     padding: 60px 32px;
 }
 .empty-state-title {
     font-size: 34px;
     font-weight: 700;
-    color: #cdd6f4;
+    font-family: 'JetBrains Mono', monospace;
+    color: #d6dbe2;
     margin-bottom: 18px;
 }
 .empty-state-body {
     font-size: 22px;
-    color: #7f849c;
+    color: #7d8794;
     line-height: 1.55;
 }
 
@@ -162,19 +223,20 @@ headerbar {
 
 /* User: right-aligned bubble */
 .msg-user {
-    background-color: #45475a;
-    color: #cdd6f4;
-    border-radius: 22px 22px 8px 22px;
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 12px 12px 4px 12px;
     padding: 18px 22px;
     margin: 8px 12px 8px 60px;
     font-size: 30px;
     line-height: 1.45;
+    border: 1px solid #262b33;
 }
 
 /* Assistant: left-aligned, transparent, larger text */
 .msg-assistant {
     background-color: transparent;
-    color: #cdd6f4;
+    color: #d6dbe2;
     padding: 12px 18px;
     margin: 8px 12px;
     font-size: 30px;
@@ -187,14 +249,14 @@ headerbar {
     margin: 2px 12px;
 }
 .tool-indicator-label {
-    color: #6c7086;
+    color: #7d8794;
     font-size: 17px;
-    font-style: italic;
+    font-family: 'JetBrains Mono', monospace;
     opacity: 0.85;
 }
 
 .msg-system-notice {
-    color: #6c7086;
+    color: #7d8794;
     font-style: italic;
     font-size: 18px;
     padding: 8px 16px;
@@ -203,158 +265,88 @@ headerbar {
 
 /* Avatar dots */
 .avatar {
-    border-radius: 50%;
+    border-radius: 6px;
     min-width: 52px;
     min-height: 52px;
-    background-color: #313244;
+    background-color: #1b1f26;
     font-weight: bold;
     font-size: 22px;
-    color: #cdd6f4;
+    color: #d6dbe2;
 }
 .avatar-user {
-    background: linear-gradient(135deg, #89b4fa, #b4befe);
-    color: #1e1e2e;
+    background-color: #262b33;
+    color: #d6dbe2;
 }
 .avatar-kali {
-    background: linear-gradient(135deg, #cba6f7, #f5c2e7);
-    color: #1e1e2e;
+    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    color: #0d0f12;
+    border: 1px solid #7dc0ff;
+    box-shadow: 0 0 8px rgba(54, 123, 240, 0.5);
 }
 
 .role-label {
-    color: #7f849c;
+    color: #7d8794;
     font-weight: 700;
     font-size: 17px;
+    font-family: 'JetBrains Mono', monospace;
     letter-spacing: 0.8px;
     text-transform: uppercase;
     margin: 0 0 5px 0;
 }
-.role-label.user { color: #89b4fa; }
-.role-label.kali { color: #cba6f7; }
+.role-label.user { color: #7d8794; }
+.role-label.kali { color: #4a9eff; }
 
 /* ===== Code blocks ===== */
 
 .code-block {
-    background-color: #11111b;
-    border: 1px solid #313244;
-    border-radius: 10px;
+    background-color: #0a0c0f;
+    border: 1px solid #262b33;
+    border-radius: 6px;
     padding: 0;
     margin: 8px 4px;
 }
 .code-block-header {
-    background-color: #181825;
-    color: #7f849c;
+    background-color: #14171c;
+    color: #7d8794;
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
     padding: 6px 12px;
-    border-bottom: 1px solid #313244;
-    border-radius: 10px 10px 0 0;
+    border-bottom: 1px solid #262b33;
+    border-radius: 6px 6px 0 0;
 }
 .code-block textview {
     background-color: transparent;
-    color: #f5e0dc;
+    color: #cfe3ff;
     font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
     font-size: 22px;
     padding: 16px 18px;
 }
 
-/* ===== Input area ===== */
-
-.input-area {
-    background-color: #181825;
-    border-top: 1px solid #313244;
-    padding: 16px;
-}
-
-.input-frame {
-    background-color: #313244;
-    border-radius: 28px;
-    padding: 10px 12px 10px 22px;
-    min-height: 68px;
-}
-
-.input-frame textview {
-    background-color: transparent;
-    color: #cdd6f4;
-    font-size: 30px;
-    padding: 12px 0;
-}
-
-.send-button {
-    background: linear-gradient(135deg, #cba6f7, #f5c2e7);
-    color: #1e1e2e;
-    border-radius: 22px;
-    min-width: 52px;
-    min-height: 52px;
-    padding: 0;
-    font-weight: bold;
-}
-.send-button:hover {
-    background: linear-gradient(135deg, #b4befe, #cba6f7);
-}
-.send-button:disabled {
-    background: #45475a;
-    color: #6c7086;
-}
-/* Send button morphs into a stop button while Kali is working. */
-.send-button.stopping {
-    background: linear-gradient(135deg, #f38ba8, #eba0ac);
-    color: #1e1e2e;
-}
-.send-button.stopping:hover {
-    background: linear-gradient(135deg, #eba0ac, #f38ba8);
-}
-
-/* sudo password field inside the confirm dialog */
-.sudo-pass {
-    font-size: 20px;
-    border-radius: 12px;
-    margin-top: 4px;
-}
-.sudo-pass:focus-within { outline: 2px solid #f38ba8; }
-
-.icon-button {
-    background-color: transparent;
-    color: #a6adc8;
-    border-radius: 14px;
-    padding: 12px;
-    min-width: 56px;
-    min-height: 56px;
-}
-.icon-button:hover {
-    background-color: #313244;
-    color: #cdd6f4;
-}
-.icon-button:disabled {
-    color: #45475a;
-}
-.icon-button.toggled {
-    background-color: #cba6f7;
-    color: #1e1e2e;
-}
-
 /* ===== Status pills ===== */
 
 .status-pill {
-    background-color: #313244;
-    color: #a6adc8;
-    border-radius: 18px;
+    background-color: #1b1f26;
+    color: #7d8794;
+    border-radius: 6px;
     padding: 8px 16px;
     font-size: 16px;
     font-weight: bold;
+    font-family: 'JetBrains Mono', monospace;
     letter-spacing: 0.5px;
 }
-.status-pill.online   { background-color: #a6e3a1; color: #1e1e2e; }
-.status-pill.offline  { background-color: #45475a; color: #cdd6f4; }
-.status-pill.error    { background-color: #f38ba8; color: #1e1e2e; }
-.status-pill.groq     { background: linear-gradient(135deg, #cba6f7, #f5c2e7);
-                        color: #1e1e2e; }
+.status-pill.online   { background-color: #2ecc71; color: #0d0f12; }
+.status-pill.offline  { background-color: #262b33; color: #d6dbe2; }
+.status-pill.error    { background-color: #e5484d; color: #ffffff; }
+.status-pill.groq     { background: linear-gradient(135deg, #367bf0, #4a9eff);
+                        color: #ffffff; }
 
 /* ===== Settings ===== */
 
 .settings-section-title {
-    color: #cba6f7;
+    color: #4a9eff;
     font-weight: bold;
     font-size: 17px;
+    font-family: 'JetBrains Mono', monospace;
     text-transform: uppercase;
     letter-spacing: 1px;
     margin: 16px 4px 6px 4px;
@@ -363,78 +355,81 @@ headerbar {
 /* ===== Confirm dialog ===== */
 
 .confirm-cmd {
-    background-color: #11111b;
-    color: #f9e2af;
+    background-color: #0a0c0f;
+    color: #4a9eff;
     font-family: 'JetBrains Mono', monospace;
     font-size: 20px;
     padding: 16px;
-    border-radius: 12px;
+    border-radius: 6px;
+    border: 1px solid #262b33;
     margin: 10px 0;
 }
 
 /* ===== Scrollbar -- wider for touch ===== */
 
 scrollbar slider {
-    background-color: #585b70;
+    background-color: #2f3640;
     border-radius: 8px;
     min-width: 16px;
     min-height: 50px;
 }
-scrollbar slider:hover { background-color: #6c7086; }
-scrollbar slider:active { background-color: #7f849c; }
+scrollbar slider:hover { background-color: #3d4651; }
+scrollbar slider:active { background-color: #367bf0; }
 
 /* ===== Entry ===== */
 
 entry {
-    background-color: #313244;
-    color: #cdd6f4;
-    border-radius: 12px;
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
     padding: 12px 16px;
-    border: none;
+    border: 1px solid #262b33;
     font-size: 20px;
 }
-entry:focus-within { outline: 2px solid #cba6f7; }
+entry:focus-within { outline: 2px solid #367bf0; border-color: #367bf0; }
 
 passwordentry {
-    background-color: #313244;
-    color: #cdd6f4;
-    border-radius: 12px;
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
     padding: 12px 16px;
-    border: none;
+    border: 1px solid #262b33;
     font-size: 20px;
 }
 
 /* ===== Quick-action chips in empty state ===== */
 
 .quick-chip {
-    background-color: #313244;
-    color: #cdd6f4;
-    border-radius: 22px;
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border: 1px solid #262b33;
+    border-radius: 6px;
     padding: 14px 24px;
     font-size: 19px;
     min-height: 40px;
 }
 .quick-chip:hover {
-    background-color: #45475a;
-    color: #f5e0dc;
+    background-color: #1f2530;
+    color: #4a9eff;
+    border-color: #367bf0;
 }
 
 /* ===== Terminal log panel ===== */
 
 .terminal-panel {
-    background-color: #0a0a12;
-    border-top: 2px solid #313244;
+    background-color: #07080a;
+    border-top: 2px solid #262b33;
 }
 
 .terminal-panel-header {
-    background-color: #11111b;
-    border-bottom: 1px solid #313244;
+    background-color: #0a0c0f;
+    border-bottom: 1px solid #262b33;
     padding: 6px 12px;
     min-height: 40px;
 }
 
 .terminal-panel-title {
-    color: #a6e3a1;
+    color: #4a9eff;
     font-family: 'JetBrains Mono', monospace;
     font-size: 14px;
     font-weight: bold;
@@ -443,56 +438,56 @@ passwordentry {
 
 .terminal-log-view {
     background-color: transparent;
-    color: #a6e3a1;
+    color: #5aa7ff;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 14px;
     padding: 8px 12px;
 }
 
 .terminal-toggle-btn {
-    background-color: #1e1e2e;
-    color: #6c7086;
-    border-radius: 10px;
+    background-color: #14171c;
+    color: #7d8794;
+    border-radius: 6px;
     padding: 6px 10px;
     font-size: 13px;
     min-height: 32px;
 }
 .terminal-toggle-btn:hover {
-    background-color: #313244;
-    color: #a6e3a1;
+    background-color: #1b1f26;
+    color: #4a9eff;
 }
 .terminal-toggle-btn.active {
-    background-color: #11111b;
-    color: #a6e3a1;
-    border: 1px solid #a6e3a1;
+    background-color: #0a0c0f;
+    color: #4a9eff;
+    border: 1px solid #367bf0;
 }
 
 /* ===== Banner for watcher events ===== */
 
 .watcher-banner {
-    background-color: #11111b;
-    border-left: 4px solid #f9e2af;
-    border-radius: 10px;
+    background-color: #0a0c0f;
+    border-left: 4px solid #f0a500;
+    border-radius: 6px;
     padding: 14px 18px;
     margin: 8px 16px;
-    color: #f9e2af;
+    color: #f0a500;
     font-size: 17px;
 }
 
 .working-row {
-    background-color: rgba(203, 166, 247, 0.15);
-    border-radius: 16px;
+    background-color: rgba(54, 123, 240, 0.15);
+    border-radius: 8px;
     padding: 10px 22px;
 }
 .working-label {
-    color: #cba6f7;
+    color: #4a9eff;
     font-size: 18px;
     font-style: italic;
     font-weight: bold;
     letter-spacing: 0.5px;
 }
 .working-spinner {
-    color: #cba6f7;
+    color: #4a9eff;
     min-width: 24px;
     min-height: 24px;
 }
@@ -500,10 +495,10 @@ passwordentry {
 /* ===== Proposed-command card (advisory flow) ===== */
 
 .cmd-card {
-    background-color: #181825;
-    border: 1px solid #313244;
-    border-left: 4px solid #cba6f7;
-    border-radius: 14px;
+    background-color: #14171c;
+    border: 1px solid #262b33;
+    border-left: 4px solid #367bf0;
+    border-radius: 8px;
     padding: 14px 16px;
     margin: 8px 0;
 }
@@ -511,53 +506,186 @@ passwordentry {
     margin-bottom: 8px;
 }
 .cmd-card-title {
-    color: #cba6f7;
+    color: #4a9eff;
     font-weight: bold;
     font-size: 15px;
+    font-family: 'JetBrains Mono', monospace;
     letter-spacing: 0.5px;
 }
 .risk-badge {
-    border-radius: 12px;
+    border-radius: 4px;
     padding: 2px 12px;
     font-size: 13px;
     font-weight: bold;
+    font-family: 'JetBrains Mono', monospace;
     letter-spacing: 0.5px;
 }
-.risk-badge.low    { background-color: #a6e3a1; color: #1e1e2e; }
-.risk-badge.medium { background-color: #f9e2af; color: #1e1e2e; }
-.risk-badge.high   { background-color: #f38ba8; color: #1e1e2e; }
+.risk-badge.low    { background-color: #2ecc71; color: #0d0f12; }
+.risk-badge.medium { background-color: #f0a500; color: #0d0f12; }
+.risk-badge.high   { background-color: #e5484d; color: #ffffff; }
 .cmd-text {
-    background-color: #11111b;
-    color: #f9e2af;
+    background-color: #0a0c0f;
+    color: #4a9eff;
     font-family: 'JetBrains Mono', monospace;
     font-size: 18px;
     padding: 12px 14px;
-    border-radius: 10px;
+    border-radius: 6px;
+    border: 1px solid #262b33;
     margin-bottom: 8px;
 }
 .cmd-explain {
-    color: #bac2de;
+    color: #aeb6c2;
     font-size: 16px;
     margin-bottom: 12px;
 }
 .cmd-run-btn {
-    background: linear-gradient(135deg, #a6e3a1, #94e2d5);
-    color: #1e1e2e;
-    border-radius: 12px;
+    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    color: #ffffff;
+    border-radius: 6px;
     padding: 10px 22px;
     font-weight: bold;
     font-size: 16px;
 }
-.cmd-run-btn:hover { background: linear-gradient(135deg, #94e2d5, #a6e3a1); }
-.cmd-run-btn:disabled { background: #45475a; color: #6c7086; }
+.cmd-run-btn:hover { background: linear-gradient(135deg, #4a9eff, #367bf0); }
+.cmd-run-btn:disabled { background: #262b33; color: #5a626d; }
 .cmd-copy-btn {
-    background-color: #313244;
-    color: #cdd6f4;
-    border-radius: 12px;
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
     padding: 10px 18px;
     font-size: 16px;
+    border: 1px solid #262b33;
 }
-.cmd-copy-btn:hover { background-color: #45475a; }
+.cmd-copy-btn:hover { background-color: #1f2530; border-color: #367bf0; }
+
+/* ===== libadwaita rows / settings / dialogs =====
+   Force the Kali surfaces on the built-in widgets so Settings and
+   dialogs match the rest of the app instead of showing stock Adwaita
+   grey. */
+
+preferencespage, preferencesgroup {
+    background-color: #0d0f12;
+}
+row, .row, list.boxed-list > row {
+    background-color: #14171c;
+    color: #d6dbe2;
+}
+list.boxed-list {
+    background-color: #14171c;
+    border: 1px solid #262b33;
+    border-radius: 8px;
+}
+row:hover { background-color: #1b1f26; }
+row > box { background-color: transparent; }
+
+/* Switches: blue when on, dark track when off */
+switch {
+    background-color: #262b33;
+    border-radius: 14px;
+}
+switch:checked {
+    background-color: #367bf0;
+}
+switch > slider {
+    background-color: #d6dbe2;
+    border-radius: 50%;
+}
+
+/* SpinRow / spinbuttons */
+spinbutton, spinbutton entry {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
+}
+spinbutton button {
+    background-color: #1b1f26;
+    color: #4a9eff;
+}
+spinbutton button:hover { background-color: #262b33; }
+
+/* ComboRow dropdown */
+comborow, dropdown {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+}
+dropdown > button {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
+}
+popover > contents, popover > arrow {
+    background-color: #14171c;
+    color: #d6dbe2;
+    border: 1px solid #262b33;
+}
+popover row:selected, dropdown listview > row:selected {
+    background-color: #367bf0;
+    color: #ffffff;
+}
+
+/* Dialogs (AlertDialog / PreferencesDialog) */
+window.dialog, dialog, .messagedialog, .dialog-content {
+    background-color: #14171c;
+    color: #d6dbe2;
+}
+.messagedialog .response-area button {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
+    margin: 4px;
+}
+.messagedialog .response-area button.suggested-action {
+    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    color: #ffffff;
+}
+.messagedialog .response-area button.destructive-action {
+    background-color: #e5484d;
+    color: #ffffff;
+}
+
+/* Search entry in the sidebar */
+.sidebar-search, searchentry, searchentry text {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border-radius: 6px;
+    border: 1px solid #262b33;
+}
+searchentry:focus-within { border-color: #367bf0; }
+
+/* Menu button / popover menu */
+menubutton > button, .menu-button {
+    color: #d6dbe2;
+}
+.popover-menu, menu, .menu {
+    background-color: #14171c;
+    color: #d6dbe2;
+}
+
+/* Generic buttons inherit the dark surface unless given a role class */
+button {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border: 1px solid #262b33;
+    border-radius: 6px;
+}
+button:hover { background-color: #1f2530; border-color: #367bf0; }
+button.flat { background-color: transparent; border: none; }
+button.flat:hover { background-color: #1b1f26; }
+button.suggested-action {
+    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    color: #ffffff;
+    border: none;
+}
+
+/* Dragon avatar tile in chat */
+.avatar-dragon {
+    border-radius: 8px;
+    background-color: #0d0f12;
+    box-shadow: 0 0 8px rgba(54, 123, 240, 0.45);
+}
+
+/* Links (e.g. 'Get an API key') in Kali blue */
+link, button.link, *:link { color: #4a9eff; }
 """
 
 
@@ -579,7 +707,7 @@ def text_to_pango(text: str) -> str:
     safe = ITALIC_RE.sub(r"<i>\1</i>", safe)
     safe = INLINE_CODE_RE.sub(
         r'<span font_family="JetBrains Mono" '
-        r'background="#11111b" foreground="#f5e0dc"> \1 </span>',
+        r'background="#0a0c0f" foreground="#cfe3ff"> \1 </span>',
         safe)
     return safe
 
@@ -823,8 +951,8 @@ class ProposedEditWidget(Gtk.Box):
             tv.set_wrap_mode(Gtk.WrapMode.NONE)
             buf = tv.get_buffer()
             # colour-tag added / removed lines so the diff reads at a glance
-            t_add = buf.create_tag("add", foreground="#a6e3a1")
-            t_del = buf.create_tag("del", foreground="#f38ba8")
+            t_add = buf.create_tag("add", foreground="#2ecc71")
+            t_del = buf.create_tag("del", foreground="#e5484d")
             t_hdr = buf.create_tag("hdr", foreground="#89b4fa")
             for i, line in enumerate(diff_lines):
                 start = buf.get_end_iter()
@@ -880,20 +1008,56 @@ class ProposedEditWidget(Gtk.Box):
         self.apply_btn.set_label("Apply")
 
 
-class Avatar(Gtk.Label):
-    """A small circular avatar with initials or symbol."""
-    def __init__(self, kind: str = "user"):
-        super().__init__()
-        self.add_css_class("avatar")
-        if kind == "user":
-            self.set_text("L")
-            self.add_css_class("avatar-user")
-        else:
-            self.set_text("K")
-            self.add_css_class("avatar-kali")
-        self.set_valign(Gtk.Align.START)
-        size = _scaled(52, floor=28)
-        self.set_size_request(size, size)
+def _find_dragon_svg() -> Optional[str]:
+    """Locate the dragon emblem SVG at runtime.  Checks the install dir,
+    the icon theme dir, and the directory this script lives in (dev/run
+    in place).  Returns None if not found so the avatar falls back to a
+    letter."""
+    candidates = [
+        os.path.expanduser("~/.local/share/kali/kali-dragon.svg"),
+        os.path.expanduser(
+            "~/.local/share/icons/hicolor/scalable/apps/kali-dragon.svg"),
+        os.path.expanduser(
+            "~/.local/share/icons/hicolor/scalable/apps/"
+            "org.thepriest.kali.svg"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "kali-dragon.svg"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+# Resolved once at import; None if the emblem isn't on disk.
+_DRAGON_SVG_PATH = _find_dragon_svg()
+
+
+def Avatar(kind: str = "user") -> Gtk.Widget:
+    """Square avatar.  Kali shows the dragon emblem; the user shows an
+    initial.  Falls back to a letter if the emblem SVG can't be loaded so
+    the UI never breaks on a missing file.  Returns a plain Gtk.Image or
+    Gtk.Label (both are valid box children) rather than a custom widget
+    subclass — simpler and impossible to crash on vfunc mismatch."""
+    size = _scaled(52, floor=28)
+    if kind == "kali" and _DRAGON_SVG_PATH:
+        try:
+            img = Gtk.Image.new_from_file(_DRAGON_SVG_PATH)
+            img.set_pixel_size(size)
+            img.set_valign(Gtk.Align.START)
+            img.add_css_class("avatar")
+            img.add_css_class("avatar-dragon")
+            img.set_size_request(size, size)
+            return img
+        except Exception as e:
+            log(f"dragon avatar load failed: {e}")
+
+    lbl = Gtk.Label(label="L" if kind == "user" else "K")
+    lbl.add_css_class("avatar")
+    lbl.add_css_class("avatar-user" if kind == "user" else "avatar-kali")
+    lbl.set_valign(Gtk.Align.START)
+    lbl.set_size_request(size, size)
+    return lbl
 
 
 def _make_wrap_label() -> Gtk.Label:
@@ -1972,13 +2136,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.terminal_log_buf = self.terminal_log_view.get_buffer()
 
         # Colour tags
-        self.terminal_log_buf.create_tag("cmd",    foreground="#f9e2af", weight=700)
-        self.terminal_log_buf.create_tag("stdout", foreground="#a6e3a1")
-        self.terminal_log_buf.create_tag("stderr", foreground="#f38ba8")
+        self.terminal_log_buf.create_tag("cmd",    foreground="#4a9eff", weight=700)
+        self.terminal_log_buf.create_tag("stdout", foreground="#5aa7ff")
+        self.terminal_log_buf.create_tag("stderr", foreground="#e5484d")
         self.terminal_log_buf.create_tag("info",   foreground="#89b4fa")
-        self.terminal_log_buf.create_tag("error",  foreground="#f38ba8", weight=700)
-        self.terminal_log_buf.create_tag("ok",     foreground="#a6e3a1", weight=700)
-        self.terminal_log_buf.create_tag("dim",    foreground="#6c7086")
+        self.terminal_log_buf.create_tag("error",  foreground="#e5484d", weight=700)
+        self.terminal_log_buf.create_tag("ok",     foreground="#2ecc71", weight=700)
+        self.terminal_log_buf.create_tag("dim",    foreground="#7d8794")
 
         sw.set_child(self.terminal_log_view)
         panel.append(sw)
