@@ -256,6 +256,19 @@ DEFAULT_SETTINGS = {
     "worker_enabled":          False,   # the headless systemd --user companion
     "worker_interval_seconds": 300,     # worker poll cadence (when enabled)
     "one_command_at_a_time":   True,    # never propose/run >1 command per message
+
+    # ── Voice (speech in / speech out) ──
+    # Voice input transcribes through Groq's Whisper endpoint (reuses the
+    # Groq key).  Voice output prefers Piper (local neural voice) and
+    # falls back to espeak-ng.  All optional; off until you turn it on.
+    "tts_enabled":      False,          # read assistant replies aloud
+    "tts_engine":       "auto",         # auto | piper | espeak
+    "tts_voice":        "",             # path to a Piper .onnx (blank = auto-find)
+    "tts_voice_espeak": "",             # espeak voice id, e.g. "en-gb" (blank = default)
+    "tts_rate":         1.0,            # 0.5 (slow) .. 2.0 (fast); 1.0 = normal
+    "voice_autosend":   True,           # auto-send after a voice message transcribes
+    "stt_model":        "whisper-large-v3-turbo",
+    "stt_language":     "",             # ISO-639-1 hint (blank = auto-detect)
 }
 
 # Add a key + model slot for every registered provider so the schema is

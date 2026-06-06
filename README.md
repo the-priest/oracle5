@@ -107,6 +107,7 @@ cd kali
 | `--no-helpers`       | skip optional desktop-control helpers                   |
 | `--no-browser`       | skip Playwright + Chromium (browser automation)         |
 | `--no-groq`          | don't install the groq library or prompt for a key      |
+| `--no-voice`         | skip voice setup (espeak / Piper / mic packages)        |
 | `--no-prompt`        | non-interactive (skips Groq key prompt)                 |
 
 ### Env overrides
@@ -186,6 +187,20 @@ A background thread that periodically:
 
 Off by default. Enable in Settings → Behaviour → Watcher. Surfaces events as transient banners in the chat area.
 
+## Voice (talk to it, hear it back)
+
+Kali can listen and speak — built to feel like the voice mode in the Claude app.
+
+**Speak instead of type.** Tap the 🎤 next to the input box, talk, tap again to send. Your speech is transcribed through Groq's Whisper endpoint (it reuses your existing Groq key — fast and accurate, nothing extra to set up). The text drops into the box and sends automatically (toggle that off in Settings → Voice if you'd rather edit first).
+
+**Hear the replies.** Flip the 🔊 toggle in the action row and Kali reads each reply aloud as it streams in — code blocks and tool output are skipped, so it reads the actual words, not punctuation. Output uses **Piper**, a local neural voice that sounds natural (the installer fetches a British voice by default); if Piper isn't available it falls back to `espeak-ng`.
+
+**Play / pause / replay any message.** Every reply has its own speaker button. Tap it to read that message, tap again to **pause**, tap once more to **resume** — real pause/resume, not restart. Tap a different message's button to jump to it. Hitting Stop, sending a new message, or starting the mic all stop the speech immediately.
+
+Everything is configurable in **Settings → Voice**: engine (auto / Piper / espeak), speech rate, Piper voice file, auto-send, Whisper model, and a language hint. There's a **Test voice** button too. Voice is entirely optional — if no engine or mic is present, the buttons just don't appear and Kali works exactly as before.
+
+Set it up with the installer (on by default), or skip it with `--no-voice`. To add a different Piper voice later, drop an `.onnx` + `.onnx.json` into `~/.local/share/kali/voices/` or point Settings → Voice at it. Voices: <https://huggingface.co/rhasspy/piper-voices>.
+
 ## What Kali can NOT do
 
 - **Rewrite her own code without you.** She *can* rewrite her own source and persona — but only by proposing a diff you approve, exactly like approving a sudo command. The Apply click is the gate. She cannot write Python that fails to parse (refused before any write), and she cannot touch the immutable `GUARDRAIL` block in `kali_persona.py`. A persona edit reloads live; a `kali.py`/`kali_core.py` edit needs a relaunch. This gate is deliberate and is not removed by any feature below.
@@ -213,8 +228,10 @@ See `kali_ext/WIRING.md` for how the six guarded hook lines plug into `kali.py`.
   ├── kali.py                  # UI
   ├── kali_core.py             # backends, tools, audit
   ├── kali_persona.py          # personality + system prompt
+  ├── kali_voice.py            # voice in/out (Groq Whisper STT, Piper/espeak TTS)
   ├── kali_ext/                # optional extensions (memory/skills/foresight/worker)
   ├── org.thepriest.kali.svg   # icon
+  ├── voices/                  # Piper voice models (.onnx) — created by --voice setup
   ├── chats.db                 # SQLite chat history
   ├── kali.log                 # diagnostics
   ├── backups/

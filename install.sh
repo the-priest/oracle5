@@ -25,6 +25,7 @@
 #   ./install.sh --no-systemd        # don't install the systemd unit
 #   ./install.sh --no-helpers        # skip optional desktop helpers
 #   ./install.sh --no-browser        # skip Playwright/Chromium
+#   ./install.sh --no-voice          # skip voice setup (espeak/piper/mic)
 #   ./install.sh --no-groq           # don't install the groq library / skip key prompt
 #   ./install.sh --no-prompt         # skip ALL interactive prompts
 #
@@ -45,6 +46,7 @@ SKIP_SYSTEMD=0
 SKIP_HELPERS=0
 SKIP_BROWSER=0
 SKIP_GROQ=0
+SKIP_VOICE=0
 NO_PROMPT=0
 for arg in "$@"; do
   case "$arg" in
@@ -55,6 +57,7 @@ for arg in "$@"; do
     --no-helpers)        SKIP_HELPERS=1 ;;
     --no-browser)        SKIP_BROWSER=1 ;;
     --no-groq)           SKIP_GROQ=1 ;;
+    --no-voice)          SKIP_VOICE=1 ;;
     --no-prompt)         NO_PROMPT=1 ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
@@ -95,7 +98,7 @@ BACKUP_DIR="${INSTALL_DIR}/backups"
 OLD_DATA_DIR="${HOME}/.local/share/oracle"
 OLD_CONFIG_DIR="${HOME}/.config/oracle"
 
-REQUIRED_FILES=(kali.py kali_core.py kali_persona.py)
+REQUIRED_FILES=(kali.py kali_core.py kali_persona.py kali_voice.py)
 OPTIONAL_FILES=(org.thepriest.kali.svg kali-dragon.svg)
 GITHUB_REPO="${KALI_REPO:-the-priest/oracle5}"
 GITHUB_BRANCH="${KALI_BRANCH:-main}"
@@ -301,6 +304,77 @@ if [ $SKIP_HELPERS -eq 0 ] && command -v apt-get >/dev/null; then
   fi
 else
   [ $SKIP_HELPERS -eq 1 ] && warn "skipping desktop helpers (--no-helpers)"
+fi
+
+# ── 6b. Voice (speech in / speech out) ────────────────────────────
+# espeak-ng  = guaranteed TTS fallback (always works, robotic)
+# recorder/player = parecord/paplay (pulseaudio-utils) or arecord/aplay
+# Piper      = local NEURAL voice — sounds pleasant, the real default
+# voice model = a natural British voice (~63MB) for Piper
+# All best-effort: nothing here aborts the install.  If Piper or the
+# model don't land, Kali falls back to espeak; if no recorder lands,
+# voice input just stays hidden and you type as normal.
+if [ $SKIP_VOICE -eq 0 ]; then
+  step "voice (speech in / speech out)"
+
+  if command -v apt-get >/dev/null; then
+    sudo apt-get install -y espeak-ng pulseaudio-utils alsa-utils 2>/dev/null \
+      && ok "voice packages installed (espeak-ng, recorder, player)" \
+      || warn "some voice packages unavailable on this mirror"
+  elif command -v pacman >/dev/null; then
+    sudo pacman -Sy --needed --noconfirm espeak-ng libpulse alsa-utils 2>/dev/null \
+      && ok "voice packages installed" || warn "some voice packages unavailable"
+  elif command -v dnf >/dev/null; then
+    sudo dnf install -y espeak-ng pulseaudio-utils alsa-utils 2>/dev/null \
+      && ok "voice packages installed" || warn "some voice packages unavailable"
+  fi
+
+  # Piper neural voice — much nicer than espeak.  Best-effort pip install.
+  say "Piper neural voice (optional, sounds better than espeak)…"
+  if command -v piper >/dev/null 2>&1 || python3 -c "import piper" >/dev/null 2>&1; then
+    ok "piper already present"
+  elif python3 -m pip install --user --break-system-packages --quiet piper-tts 2>/dev/null; then
+    ok "piper installed (pip)"
+  else
+    warn "piper not installed — Kali uses espeak until you add it:"
+    warn "   python3 -m pip install --user --break-system-packages piper-tts"
+  fi
+
+  # A voice model for Piper.  Pleasant British female (jenny), ~63MB.
+  VOICE_DIR="${DATA_DIR}/voices"
+  mkdir -p "${VOICE_DIR}" 2>/dev/null || true
+  if ls "${VOICE_DIR}"/*.onnx >/dev/null 2>&1; then
+    ok "piper voice model already present"
+  else
+    if command -v curl >/dev/null;  then DL=(curl -fsSL -o)
+    elif command -v wget >/dev/null; then DL=(wget -qO)
+    else DL=(); fi
+    if [ ${#DL[@]} -gt 0 ]; then
+      say "downloading a voice model (en_GB jenny, ~63MB)…"
+      HF="https://huggingface.co/rhasspy/piper-voices/resolve/main/en"
+      J="${HF}/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx"
+      if "${DL[@]}" "${VOICE_DIR}/en_GB-jenny_dioco-medium.onnx" "${J}" 2>/dev/null \
+         && "${DL[@]}" "${VOICE_DIR}/en_GB-jenny_dioco-medium.onnx.json" "${J}.json" 2>/dev/null; then
+        ok "voice model installed → ${VOICE_DIR}"
+      else
+        warn "jenny download failed — trying en_US lessac…"
+        L="${HF}/en_US/lessac/medium/en_US-lessac-medium.onnx"
+        if "${DL[@]}" "${VOICE_DIR}/en_US-lessac-medium.onnx" "${L}" 2>/dev/null \
+           && "${DL[@]}" "${VOICE_DIR}/en_US-lessac-medium.onnx.json" "${L}.json" 2>/dev/null; then
+          ok "voice model installed (en_US lessac) → ${VOICE_DIR}"
+        else
+          warn "no voice model fetched — espeak still works; grab one later from"
+          warn "   https://huggingface.co/rhasspy/piper-voices"
+        fi
+      fi
+    else
+      warn "neither curl nor wget present — skipped voice model download"
+    fi
+  fi
+  say "voice input transcribes through Groq Whisper (uses your Groq key)"
+  say "turn it on per chat with the 🔊 button, or in Settings → Voice"
+else
+  warn "skipping voice setup (--no-voice)"
 fi
 
 # ── 7. Source files ───────────────────────────────────────────────

@@ -47,9 +47,20 @@ from kali_persona import (
     build_system_prompt, assemble_messages, title_from_first_message,
 )
 
+# Voice (speech in / speech out) is optional.  If kali_voice is missing or
+# fails to import, the app runs exactly as before — every voice hook below
+# guards on `self.stt` / `self.tts` being present.
+try:
+    import kali_voice
+    kali_voice.set_logger(log)
+    _VOICE_OK = True
+except Exception as _ve:  # noqa
+    kali_voice = None
+    _VOICE_OK = False
+
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -686,6 +697,40 @@ button.suggested-action {
 
 /* Links (e.g. 'Get an API key') in Kali blue */
 link, button.link, *:link { color: #4a9eff; }
+
+/* Voice: mic button + active recording state */
+.mic-button {
+    background-color: #1b1f26;
+    color: #d6dbe2;
+    border: 1px solid #262b33;
+    border-radius: 6px;
+}
+.mic-button:hover { background-color: #1f2530; border-color: #367bf0; }
+.mic-recording {
+    background: linear-gradient(135deg, #e5484d, #ff5c61);
+    color: #ffffff;
+    border: 1px solid #ff5c61;
+    box-shadow: 0 0 10px rgba(229, 72, 77, 0.6);
+}
+.mic-recording:hover {
+    background: linear-gradient(135deg, #ff5c61, #ff6f73);
+    border-color: #ff6f73;
+}
+
+/* Per-message read-aloud button */
+.msg-speak-btn {
+    min-width: 26px;
+    min-height: 26px;
+    padding: 2px;
+    color: #7d8794;
+    background-color: transparent;
+    border: none;
+}
+.msg-speak-btn:hover { background-color: #1b1f26; color: #d6dbe2; }
+.msg-speak-btn.speaking {
+    color: #4a9eff;
+    background-color: rgba(54, 123, 240, 0.15);
+}
 """
 
 
@@ -1104,12 +1149,16 @@ class MessageWidget(Gtk.Box):
 
     def __init__(self, role: str, content: str = "",
                  meta: Optional[Dict[str, Any]] = None,
-                 on_run_command: Optional[Callable[[str, str], None]] = None):
+                 on_run_command: Optional[Callable[[str, str], None]] = None,
+                 on_speak: Optional[Callable[["MessageWidget"], None]] = None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.role = role
         self.meta = meta or {}
         self._content = content or ""
         self._on_run_command = on_run_command
+        self._on_speak = on_speak
+        self.speak_btn: Optional[Gtk.Button] = None
+        self._speak_state = "idle"
         self._blocks_container: Optional[Gtk.Box] = None
         self._streaming_label: Optional[Gtk.Label] = None
         self.add_css_class("msg-row")
@@ -1162,10 +1211,28 @@ class MessageWidget(Gtk.Box):
             content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                                   spacing=2)
             content_box.set_hexpand(True)
+            # Header: role label on the left, a per-message play/pause
+            # button on the right (so each reply can be read, paused, and
+            # replayed on its own).
+            header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             label = Gtk.Label(label="KALI", xalign=0.0)
             label.add_css_class("role-label")
             label.add_css_class("kali")
-            content_box.append(label)
+            header.append(label)
+            if self._on_speak is not None:
+                hsp = Gtk.Box()
+                hsp.set_hexpand(True)
+                header.append(hsp)
+                self.speak_btn = Gtk.Button.new_from_icon_name(
+                    "audio-volume-high-symbolic")
+                self.speak_btn.add_css_class("msg-speak-btn")
+                self.speak_btn.add_css_class("flat")
+                self.speak_btn.set_valign(Gtk.Align.CENTER)
+                self.speak_btn.set_tooltip_text("Read this message aloud")
+                self.speak_btn.connect(
+                    "clicked", lambda *_: self._on_speak(self))
+                header.append(self.speak_btn)
+            content_box.append(header)
             inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             inner.add_css_class("msg-assistant")
             content_box.append(inner)
@@ -1290,6 +1357,24 @@ class MessageWidget(Gtk.Box):
                         break
             except Exception as e:
                 log(f"propose render failed: {e}")
+
+    def set_speak_state(self, state: str):
+        """state: 'idle' | 'speaking' | 'paused'."""
+        self._speak_state = state
+        if not self.speak_btn:
+            return
+        if state == "speaking":
+            self.speak_btn.set_icon_name("media-playback-pause-symbolic")
+            self.speak_btn.set_tooltip_text("Pause")
+            self.speak_btn.add_css_class("speaking")
+        elif state == "paused":
+            self.speak_btn.set_icon_name("media-playback-start-symbolic")
+            self.speak_btn.set_tooltip_text("Resume")
+            self.speak_btn.add_css_class("speaking")
+        else:  # idle
+            self.speak_btn.set_icon_name("audio-volume-high-symbolic")
+            self.speak_btn.set_tooltip_text("Read this message aloud")
+            self.speak_btn.remove_css_class("speaking")
 
     def start_streaming(self):
         child = self._blocks_container.get_first_child()
@@ -1626,6 +1711,121 @@ class SettingsDialog(Adw.PreferencesDialog):
         b_page.add(wg)
         self.add(b_page)
 
+        # ── VOICE ──────────────────────────────────────────
+        v_page = Adw.PreferencesPage()
+        v_page.set_title("Voice")
+        v_page.set_icon_name("audio-input-microphone-symbolic")
+
+        tts = getattr(parent, "tts", None)
+        stt = getattr(parent, "stt", None)
+
+        # Output (read replies aloud)
+        og = Adw.PreferencesGroup()
+        og.set_title("Read replies aloud")
+        if tts is not None and tts.available():
+            og.set_description(f"Speech engine: {tts.engine_name()}.")
+        elif tts is not None:
+            og.set_description(
+                "No speech engine found.  Install espeak-ng (basic) or "
+                "Piper (neural) — see install.sh --voice.")
+        else:
+            og.set_description("Voice module unavailable.")
+
+        self.tts_enabled_row = Adw.SwitchRow()
+        self.tts_enabled_row.set_title("Read assistant replies aloud")
+        self.tts_enabled_row.set_active(bool(parent.settings.get("tts_enabled")))
+        self.tts_enabled_row.set_sensitive(tts is not None and tts.available())
+        self.tts_enabled_row.connect("notify::active", self._on_tts_enable)
+        og.add(self.tts_enabled_row)
+
+        self.tts_engine_row = Adw.ComboRow()
+        self.tts_engine_row.set_title("Voice engine")
+        self.tts_engine_row.set_subtitle("Auto prefers Piper, falls back to espeak")
+        self._tts_engine_keys = ["auto", "piper", "espeak"]
+        self.tts_engine_row.set_model(Gtk.StringList.new(
+            ["Auto", "Piper (neural)", "espeak (robotic)"]))
+        cur_eng = (parent.settings.get("tts_engine") or "auto").lower()
+        if cur_eng in self._tts_engine_keys:
+            self.tts_engine_row.set_selected(self._tts_engine_keys.index(cur_eng))
+        self.tts_engine_row.connect("notify::selected", self._on_tts_engine)
+        og.add(self.tts_engine_row)
+
+        rate_row = Adw.SpinRow.new_with_range(0.5, 2.0, 0.05)
+        rate_row.set_title("Speech rate")
+        rate_row.set_subtitle("1.0 = normal.  Lower = slower.")
+        rate_row.set_digits(2)
+        rate_row.set_value(float(parent.settings.get("tts_rate", 1.0) or 1.0))
+        rate_row.connect("notify::value",
+                         lambda r, *_: self._set("tts_rate",
+                                                 round(r.get_value(), 2)))
+        og.add(rate_row)
+
+        self.tts_voice_row = Adw.EntryRow()
+        self.tts_voice_row.set_title("Piper voice file (.onnx)")
+        self.tts_voice_row.set_text(parent.settings.get("tts_voice", "") or "")
+        self.tts_voice_row.set_show_apply_button(True)
+        self.tts_voice_row.connect("apply", self._on_tts_voice)
+        og.add(self.tts_voice_row)
+
+        test_row = Adw.ActionRow()
+        test_row.set_title("Test voice")
+        test_row.set_subtitle("Speak a short sample with the current settings.")
+        test_btn = Gtk.Button(label="▶ Test")
+        test_btn.set_valign(Gtk.Align.CENTER)
+        test_btn.add_css_class("icon-button")
+        test_btn.set_sensitive(tts is not None and tts.available())
+        test_btn.connect("clicked", self._on_tts_test)
+        test_row.add_suffix(test_btn)
+        og.add(test_row)
+        v_page.add(og)
+
+        # Input (speak instead of type)
+        ig = Adw.PreferencesGroup()
+        ig.set_title("Speak instead of type")
+        if stt is not None and stt.recorder_available():
+            ig.set_description(
+                f"Mic recorder: {stt.recorder_name()}.  Transcribed through "
+                "Groq Whisper (uses your Groq key).")
+        elif stt is not None:
+            ig.set_description(
+                "No microphone recorder found.  Install pulseaudio-utils "
+                "(parecord) or alsa-utils (arecord).")
+        else:
+            ig.set_description("Voice module unavailable.")
+
+        self.autosend_row = Adw.SwitchRow()
+        self.autosend_row.set_title("Auto-send after transcription")
+        self.autosend_row.set_subtitle(
+            "Off = drop the text in the box so you can edit before sending.")
+        self.autosend_row.set_active(bool(parent.settings.get("voice_autosend", True)))
+        self.autosend_row.set_sensitive(stt is not None and stt.recorder_available())
+        self.autosend_row.connect("notify::active",
+                                  lambda r, _ps: self._set("voice_autosend",
+                                                           r.get_active()))
+        ig.add(self.autosend_row)
+
+        self.stt_model_row = Adw.EntryRow()
+        self.stt_model_row.set_title("Whisper model")
+        self.stt_model_row.set_text(
+            parent.settings.get("stt_model", "whisper-large-v3-turbo"))
+        self.stt_model_row.set_show_apply_button(True)
+        self.stt_model_row.connect("apply",
+                                   lambda r: self._set("stt_model",
+                                                       r.get_text().strip()
+                                                       or "whisper-large-v3-turbo"))
+        ig.add(self.stt_model_row)
+
+        self.stt_lang_row = Adw.EntryRow()
+        self.stt_lang_row.set_title("Language hint (optional)")
+        self.stt_lang_row.set_text(parent.settings.get("stt_language", "") or "")
+        self.stt_lang_row.set_show_apply_button(True)
+        self.stt_lang_row.connect("apply",
+                                  lambda r: self._set("stt_language",
+                                                      r.get_text().strip()))
+        ig.add(self.stt_lang_row)
+        v_page.add(ig)
+        self.add(v_page)
+
         # ── SYSTEM PROMPT ──────────────────────────────────
         sp_page = Adw.PreferencesPage()
         sp_page.set_title("Persona")
@@ -1829,6 +2029,47 @@ class SettingsDialog(Adw.PreferencesDialog):
         text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
         self._set("system_prompt", text)
 
+    # ── voice handlers ──
+    def _on_tts_enable(self, row, _ps):
+        on = row.get_active()
+        self._set("tts_enabled", on)
+        # Keep the toolbar speaker toggle in sync if it exists.
+        tb = getattr(self.win, "tts_toggle", None)
+        if tb is not None and tb.get_active() != on:
+            tb.set_active(on)
+        if not on and getattr(self.win, "tts", None):
+            self.win.tts.stop()
+
+    def _on_tts_engine(self, row, _ps):
+        idx = row.get_selected()
+        key = self._tts_engine_keys[idx] if 0 <= idx < len(self._tts_engine_keys) else "auto"
+        self._set("tts_engine", key)
+        tts = getattr(self.win, "tts", None)
+        if tts is not None:
+            tts.reconfigure()
+            avail = tts.available()
+            self.tts_enabled_row.set_sensitive(avail)
+            if avail:
+                self.win._show_toast(f"Voice engine: {tts.engine_name()}")
+            else:
+                self.win._show_toast("That engine isn't available on this box.")
+
+    def _on_tts_voice(self, row):
+        self._set("tts_voice", row.get_text().strip())
+        tts = getattr(self.win, "tts", None)
+        if tts is not None:
+            tts.reconfigure()
+            self.tts_enabled_row.set_sensitive(tts.available())
+            self.win._show_toast(f"Voice engine: {tts.engine_name()}")
+
+    def _on_tts_test(self, _btn):
+        tts = getattr(self.win, "tts", None)
+        if tts is None or not tts.available():
+            self.win._show_toast("No voice engine available.")
+            return
+        tts.stop()
+        tts.speak_all("Voice check. Kali is online and ready.")
+
 
 # ═════════════════════════════════════════════════════════════════════
 # MAIN WINDOW
@@ -1893,6 +2134,32 @@ class MainWindow(Adw.ApplicationWindow):
         # Set when the operator hits the stop button.  Halts the current
         # stream AND prevents the tool chain from kicking another turn.
         self._stop_requested: bool = False
+
+        # ── Voice (optional) ──
+        # stt: tap-to-talk transcription via Groq Whisper.
+        # tts: read assistant replies aloud (Piper or espeak).
+        # streamer: turns the token stream into speakable sentences.
+        self.stt = None
+        self.tts = None
+        self._tts_streamer = None
+        self._recording = False
+        self._tts_suspended = False    # true for a turn that's running tools
+        # The assistant message whose audio is currently queued/playing,
+        # so its per-message button reflects play/pause and switching to
+        # another message stops this one.
+        self._speaking_widget = None
+        self._turn_active = False       # an assistant turn is mid-flight
+        if _VOICE_OK:
+            try:
+                self.stt = kali_voice.SpeechToText(lambda: self.settings)
+                self.tts = kali_voice.TextToSpeech(lambda: self.settings)
+                self._tts_streamer = kali_voice.SpeechStreamer()
+                self.tts.set_state_callback(
+                    lambda st: GLib.idle_add(self._on_tts_state, st))
+            except Exception as _e:
+                log(f"voice init failed: {_e}")
+                self.stt = None
+                self.tts = None
 
         self._build_ui()
         self._wire_actions()
@@ -2211,6 +2478,22 @@ class MainWindow(Adw.ApplicationWindow):
             btn.connect("clicked", lambda *_, c=cb: c())
             actions.append(btn)
 
+        # Speaker toggle — read assistant replies aloud.  Only shown when
+        # a TTS engine is actually available on the box.
+        self.tts_toggle = None
+        if self.tts is not None and self.tts.available():
+            self.tts_toggle = Gtk.ToggleButton()
+            self.tts_toggle.set_icon_name("audio-volume-high-symbolic")
+            self.tts_toggle.add_css_class("icon-button")
+            self.tts_toggle.set_tooltip_text(
+                f"Read replies aloud — {self.tts.engine_name()}")
+            on = bool(self.settings.get("tts_enabled"))
+            self.tts_toggle.set_active(on)
+            if on:
+                self.tts_toggle.add_css_class("toggled")
+            self.tts_toggle.connect("toggled", self._on_tts_toggled)
+            actions.append(self.tts_toggle)
+
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         actions.append(spacer)
@@ -2247,6 +2530,18 @@ class MainWindow(Adw.ApplicationWindow):
         kc = Gtk.EventControllerKey()
         kc.connect("key-pressed", self._on_input_key)
         self.input_view.add_controller(kc)
+
+        # Mic — tap to talk, tap again to stop & transcribe.  Only shown
+        # when a recorder is present on the box.
+        self.mic_btn = None
+        if self.stt is not None and self.stt.recorder_available():
+            self.mic_btn = Gtk.Button()
+            self.mic_btn.set_icon_name("audio-input-microphone-symbolic")
+            self.mic_btn.add_css_class("mic-button")
+            self.mic_btn.set_valign(Gtk.Align.END)
+            self.mic_btn.set_tooltip_text("Speak (tap to start, tap to send)")
+            self.mic_btn.connect("clicked", lambda *_: self._on_mic_clicked())
+            ibox.append(self.mic_btn)
 
         self.send_btn = Gtk.Button()
         self.send_btn.set_icon_name("send-to-symbolic")
@@ -2485,7 +2780,8 @@ class MainWindow(Adw.ApplicationWindow):
         if first is not None and not isinstance(first, MessageWidget):
             self.msg_box.remove(first)
         w = MessageWidget(role, content, meta,
-                          on_run_command=self._run_proposed_command)
+                          on_run_command=self._run_proposed_command,
+                          on_speak=self._on_message_speak)
         self.msg_box.append(w)
         # New message → force scroll.  This is when the user sent something
         # or a new assistant turn started; they want to see it.  Mid-stream
@@ -2554,6 +2850,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._stop_requested = True
         if self.streaming_cancel:
             self.streaming_cancel.set()
+        if self.tts:
+            self.tts.stop()
         self._show_toast("Stopping…")
         # If a stream is live, the backend will fire on_done({cancelled})
         # and _on_stream_done tears everything down.  If we're between
@@ -2577,6 +2875,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.streaming_msg_db_id = None
         self.streaming_chat_id = None
         self._tool_chain_depth = 0
+        self._turn_active = False
         self._set_working(False)
         self._set_send_mode(False)
 
@@ -2593,6 +2892,10 @@ class MainWindow(Adw.ApplicationWindow):
             return
         buf.set_text("")
 
+        # A new message means stop reading the previous reply out loud.
+        if self.tts:
+            self.tts.stop()
+
         if self.current_chat_id is None:
             self._new_chat()
         cid = self.current_chat_id
@@ -2601,6 +2904,154 @@ class MainWindow(Adw.ApplicationWindow):
         self._maybe_set_title_from_first(cid, text)
 
         self._kick_assistant_turn()
+
+    # ── voice (speech in / speech out) ──────────────────────────
+
+    def _on_tts_toggled(self, btn):
+        on = btn.get_active()
+        self.settings["tts_enabled"] = on
+        save_settings(self.settings)
+        if on:
+            btn.add_css_class("toggled")
+        else:
+            btn.remove_css_class("toggled")
+            # Turning it off should also shut it up right now.
+            if self.tts:
+                self.tts.stop()
+
+    # ── per-message playback (play / pause / resume / replay) ──
+    def _on_message_speak(self, widget):
+        """The speaker button on a single assistant message was tapped."""
+        if not (self.tts and self.tts.available()):
+            self._show_toast(
+                "No voice engine — set one up in Settings → Voice.", timeout=5)
+            return
+        content = (getattr(widget, "_content", "") or "").strip()
+        if not content:
+            self._show_toast("Nothing to read yet.")
+            return
+        if widget is self._speaking_widget:
+            # Toggle this message's playback.
+            if self.tts.is_paused():
+                self.tts.resume()
+            elif self.tts.is_speaking():
+                self.tts.pause()
+            else:
+                # Finished already — replay from the top.
+                self._start_speaking_widget(widget)
+            return
+        # A different message — take over.
+        self._start_speaking_widget(widget)
+
+    def _start_speaking_widget(self, widget):
+        prev = self._speaking_widget
+        if prev is not None and prev is not widget:
+            prev.set_speak_state("idle")
+        # Manual playback shouldn't be re-read by the streamer.
+        self._turn_active = False
+        self.tts.stop()
+        self._speaking_widget = widget
+        widget.set_speak_state("speaking")
+        self.tts.speak_all(getattr(widget, "_content", "") or "")
+
+    def _on_tts_state(self, state):
+        """Driven from the TTS worker (marshalled here): keep the owning
+        message's button in sync with what the speaker is doing."""
+        w = self._speaking_widget
+        if state == "idle":
+            # Ignore a stale idle: either the speaker is busy again, or
+            # we're still streaming a live reply that will queue more.
+            if self.tts and self.tts.is_speaking():
+                return False
+            if self._turn_active and w is self.streaming_msg_widget:
+                return False
+            if w is not None:
+                w.set_speak_state("idle")
+            self._speaking_widget = None
+        elif state == "speaking":
+            if w is not None:
+                w.set_speak_state("speaking")
+        elif state == "paused":
+            if w is not None:
+                w.set_speak_state("paused")
+        return False
+
+    def _set_mic_visual(self, state: str):
+        """state: 'idle' | 'recording' | 'busy'."""
+        if not self.mic_btn:
+            return
+        self.mic_btn.remove_css_class("mic-recording")
+        if state == "recording":
+            self.mic_btn.set_icon_name("media-playback-stop-symbolic")
+            self.mic_btn.add_css_class("mic-recording")
+            self.mic_btn.set_tooltip_text("Listening… tap to stop & send")
+            self.mic_btn.set_sensitive(True)
+        elif state == "busy":
+            self.mic_btn.set_icon_name("content-loading-symbolic")
+            self.mic_btn.set_tooltip_text("Transcribing…")
+            self.mic_btn.set_sensitive(False)
+        else:  # idle
+            self.mic_btn.set_icon_name("audio-input-microphone-symbolic")
+            self.mic_btn.set_tooltip_text("Speak (tap to start, tap to send)")
+            self.mic_btn.set_sensitive(True)
+
+    def _on_mic_clicked(self):
+        if not self.stt:
+            return
+        # Already recording → stop and transcribe.
+        if self._recording:
+            self._recording = False
+            self._set_mic_visual("busy")
+            threading.Thread(target=self._transcribe_worker,
+                             daemon=True).start()
+            return
+
+        # Not recording → check we can, then start.
+        reason = self.stt.unavailable_reason()
+        if reason:
+            self._show_toast(reason, timeout=5)
+            return
+        # Don't let Kali talk over the operator.
+        if self.tts:
+            self.tts.stop()
+        if self.stt.start():
+            self._recording = True
+            self._set_mic_visual("recording")
+        else:
+            self._show_toast("Couldn't start the microphone.")
+
+    def _transcribe_worker(self):
+        """Runs off the UI thread: stop the recorder, send to Groq, hand
+        the result back to the UI thread."""
+        wav = self.stt.stop()
+        if not wav:
+            GLib.idle_add(self._apply_transcript, "",
+                          "No audio captured.")
+            return
+        text, err = self.stt.transcribe(wav)
+        GLib.idle_add(self._apply_transcript, text, err)
+
+    def _apply_transcript(self, text: str, err: Optional[str]):
+        self._set_mic_visual("idle")
+        if err:
+            self._show_toast(err, timeout=5)
+            return
+        if not text:
+            self._show_toast("Didn't catch that — try again.")
+            return
+        buf = self.input_view.get_buffer()
+        existing = buf.get_text(buf.get_start_iter(),
+                                buf.get_end_iter(), False)
+        # Append to whatever's already typed rather than clobbering it.
+        if existing.strip():
+            buf.set_text((existing.rstrip() + " " + text).strip())
+        else:
+            buf.set_text(text)
+        if self.settings.get("voice_autosend", True):
+            self._send_user_message()
+        else:
+            self.input_view.grab_focus()
+        return False
 
     def _set_working(self, working: bool, label: str = "working…"):
         """Show or hide the 'working' spinner banner.  Called from the
@@ -2694,6 +3145,14 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
+        # Fresh assistant widget for this step — reset the speech streamer
+        # so sentence detection starts clean, and clear the tool-turn
+        # suspend flag (it re-arms below if this turn emits a tool call).
+        if self._tts_streamer is not None:
+            self._tts_streamer.reset()
+        self._tts_suspended = False
+        self._turn_active = True
+
         # Only show the streaming widget if user is looking at this chat
         if chat_id == self.current_chat_id:
             self.streaming_msg_widget = self._append_message_widget(
@@ -2703,7 +3162,8 @@ class MainWindow(Adw.ApplicationWindow):
             # User has navigated away.  We still need a widget to buffer
             # tokens for finish_streaming, but don't attach it to msg_box.
             self.streaming_msg_widget = MessageWidget(
-                "assistant", "", on_run_command=self._run_proposed_command)
+                "assistant", "", on_run_command=self._run_proposed_command,
+                on_speak=self._on_message_speak)
             self.streaming_msg_widget.start_streaming()
 
         self.streaming_msg_db_id = self.store.add_message(
@@ -2734,13 +3194,57 @@ class MainWindow(Adw.ApplicationWindow):
             # Only scroll if user is on the chat that owns this stream
             if self.streaming_chat_id == self.current_chat_id:
                 self._scroll_to_bottom()
+            self._feed_tts_stream()
         return False
+
+    def _feed_tts_stream(self):
+        """Hand any newly-completed sentences to the speaker as the reply
+        streams in.  Suspends for a turn that emits tool tags so we never
+        read raw tool XML aloud — the post-tool prose reply gets read
+        instead."""
+        if not (self.tts and self.settings.get("tts_enabled")):
+            return
+        if self._tts_streamer is None or self.streaming_msg_widget is None:
+            return
+        content = self.streaming_msg_widget._content or ""
+        if not self._tts_suspended and ("<tool" in content):
+            # Model is doing a tool turn — stop streaming this widget's
+            # audio.  Drop anything already queued from it.
+            self._tts_suspended = True
+            self.tts.stop()
+            return
+        if self._tts_suspended:
+            return
+        try:
+            sentences = self._tts_streamer.feed(content)
+            if sentences:
+                # This reply now owns the speaker; its per-message button
+                # will show pause while it reads.
+                if self._speaking_widget is not self.streaming_msg_widget:
+                    prev = self._speaking_widget
+                    if prev is not None:
+                        prev.set_speak_state("idle")
+                    self._speaking_widget = self.streaming_msg_widget
+                for sentence in sentences:
+                    self.tts.speak(sentence)
+        except Exception as e:
+            log(f"tts stream feed error: {e}")
 
     def _on_stream_done(self, meta):
         if not self.streaming_msg_widget:
             self._finish_turn_cleanup()
             return False
         final = self.streaming_msg_widget.finish_streaming()
+        # Flush the last sentence to the speaker (unless this turn ran
+        # tools, in which case it was never spoken).
+        if (self.tts and self.settings.get("tts_enabled")
+                and not self._tts_suspended and self._tts_streamer is not None
+                and not (meta.get("cancelled") or self._stop_requested)):
+            try:
+                for sentence in self._tts_streamer.flush(final):
+                    self.tts.speak(sentence)
+            except Exception as e:
+                log(f"tts flush error: {e}")
         if self.streaming_msg_db_id:
             self.store.update_message(self.streaming_msg_db_id, final)
         calls = parse_tool_calls(final)
@@ -2804,6 +3308,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.streaming_msg_db_id = None
         self.streaming_chat_id = None
         self._tool_chain_depth = 0
+        self._turn_active = False
         self._set_working(False)
         self._set_send_mode(False)
         return False
@@ -3710,6 +4215,16 @@ class MainWindow(Adw.ApplicationWindow):
     def shutdown(self):
         if self.streaming_cancel:
             self.streaming_cancel.set()
+        if getattr(self, "tts", None):
+            try:
+                self.tts.stop()
+            except Exception:
+                pass
+        if getattr(self, "stt", None):
+            try:
+                self.stt.cancel()
+            except Exception:
+                pass
         self.watcher.stop()
         try:
             self.store.close()

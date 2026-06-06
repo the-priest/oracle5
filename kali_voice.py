@@ -1,0 +1,908 @@
+#!/usr/bin/env python3
+"""
+kali_voice — speech in / speech out for Kali.
+
+Two halves, both self-contained (stdlib only, no GTK, no third-party
+Python packages required at import time):
+
+  • SpeechToText  — record the mic to a temp WAV with whatever CLI
+                    recorder the box has (parecord / arecord / ffmpeg),
+                    then transcribe it through Groq's OpenAI-compatible
+                    Whisper endpoint (reuses the operator's existing Groq
+                    key — fast, accurate, no model download).
+
+  • TextToSpeech  — a queue-backed worker that speaks text out loud.
+                    Prefers Piper (local neural voice, sounds good) and
+                    falls back to espeak-ng (always-available, robotic).
+                    Fully interruptible: stop() drops the queue and kills
+                    whatever is mid-sentence.
+
+  • SpeechStreamer — turns a growing stream of assistant tokens into a
+                    sequence of complete, speakable sentences while
+                    skipping fenced code blocks, so TTS can start talking
+                    before the model has finished writing.
+
+Nothing here talks to the rest of the app except through the small
+`get_settings` callable handed to the constructors, so it stays easy to
+test in isolation and impossible to wedge the UI thread.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+import json
+import queue
+import shutil
+import signal
+import tempfile
+import threading
+import subprocess
+import urllib.request
+import urllib.error
+from io import BytesIO
+from typing import Callable, Dict, List, Optional, Tuple
+
+# ── logging shim ─────────────────────────────────────────────────────
+# The app injects kali_core.log; until then we no-op so the module is
+# importable and testable on its own.
+_LOG: Callable[[str], None] = lambda _m: None
+
+
+def set_logger(fn: Callable[[str], None]) -> None:
+    global _LOG
+    if callable(fn):
+        _LOG = fn
+
+
+def _log(msg: str) -> None:
+    try:
+        _LOG(f"voice: {msg}")
+    except Exception:
+        pass
+
+
+GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+DEFAULT_STT_MODEL   = "whisper-large-v3-turbo"
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TEXT CLEANING — strip the markup the model writes so the voice reads
+# prose, not asterisks, backticks, tool tags, or raw code.
+# ═════════════════════════════════════════════════════════════════════
+
+_TOOL_TAG_RE   = re.compile(r"<tool\b[^>]*>.*?</tool\s*>", re.DOTALL | re.IGNORECASE)
+_TOOL_FRAG_RE  = re.compile(r"<tool\b[^>]*?>.*?$", re.DOTALL | re.IGNORECASE)
+_FENCE_RE      = re.compile(r"```.*?```", re.DOTALL)
+_FENCE_OPEN_RE = re.compile(r"```.*$", re.DOTALL)
+_INLINE_CODE   = re.compile(r"`([^`]+)`")
+_MD_LINK       = re.compile(r"\[([^\]]+)\]\((?:[^)]+)\)")
+_BARE_URL      = re.compile(r"https?://\S+")
+_EMPHASIS      = re.compile(r"(\*\*|\*|__|_|~~)")
+_HEADING       = re.compile(r"^\s{0,3}#{1,6}\s*")
+_BLOCKQUOTE    = re.compile(r"^\s{0,3}>\s?")
+_LIST_BULLET   = re.compile(r"^\s{0,3}[-*+]\s+")
+_LIST_NUM      = re.compile(r"^\s{0,3}\d+[.)]\s+")
+_HRULE         = re.compile(r"^\s{0,3}([-*_])\s*(?:\1\s*){2,}$")
+_WS            = re.compile(r"[ \t]+")
+
+
+def _clean_inline(line: str) -> str:
+    """Strip inline markdown from a single line, leaving readable words."""
+    s = line
+    s = _MD_LINK.sub(r"\1", s)            # [text](url) -> text
+    s = _BARE_URL.sub(" link ", s)        # don't spell out URLs
+    s = _INLINE_CODE.sub(r"\1", s)        # `code` -> code
+    s = _HEADING.sub("", s)               # ## Heading -> Heading
+    s = _BLOCKQUOTE.sub("", s)
+    s = _LIST_BULLET.sub("", s)
+    s = _LIST_NUM.sub("", s)
+    s = _EMPHASIS.sub("", s)              # **bold** / _italic_ markers
+    s = s.replace("`", "")
+    s = _WS.sub(" ", s).strip()
+    if _HRULE.match(line.strip()):
+        return ""
+    # A line that's pure punctuation / symbols has nothing to say.
+    if s and not re.search(r"[A-Za-z0-9]", s):
+        return ""
+    return s
+
+
+def clean_for_speech(text: str) -> str:
+    """Full one-shot clean of a complete message for TTS."""
+    if not text:
+        return ""
+    s = _TOOL_TAG_RE.sub(" ", text)
+    s = _TOOL_FRAG_RE.sub(" ", s)
+    s = _FENCE_RE.sub(" . ", s)           # whole code blocks -> a pause
+    s = _FENCE_OPEN_RE.sub(" ", s)        # dangling open fence
+    out: List[str] = []
+    for ln in s.split("\n"):
+        c = _clean_inline(ln)
+        if c:
+            out.append(c)
+    joined = "\n".join(out)
+    return joined.strip()
+
+
+# ── sentence segmentation ────────────────────────────────────────────
+# Split into chunks short enough to feel responsive and to make stop()
+# snappy, but not so short the cadence turns choppy.  We respect sentence
+# punctuation, fall back to newlines, and hard-wrap anything very long.
+
+_ABBREV = {
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
+    "e.g", "i.e", "no", "fig", "al", "inc", "ltd", "co",
+}
+_SENT_BOUNDARY = re.compile(r"([.!?…]+[\"')\]]?)(\s+|$)")
+_MAX_CHUNK = 240
+_MIN_CHUNK = 8
+
+
+def _looks_like_abbrev(text: str) -> bool:
+    tail = re.split(r"\s+", text.strip())[-1] if text.strip() else ""
+    tail = tail.rstrip(".!?…\"')]").lower()
+    if tail in _ABBREV:
+        return True
+    # single capital letter + dot ("A.")  or  a number ("3.14")
+    if re.fullmatch(r"[A-Za-z]", tail):
+        return True
+    if re.fullmatch(r"\d+", tail):
+        return True
+    return False
+
+
+def split_sentences(text: str) -> List[str]:
+    """Greedy sentence splitter tuned for spoken output."""
+    text = text.strip()
+    if not text:
+        return []
+    chunks: List[str] = []
+    buf = ""
+    i = 0
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            if buf.strip():
+                chunks.append(buf.strip())
+                buf = ""
+            continue
+        pos = 0
+        for m in _SENT_BOUNDARY.finditer(line):
+            seg = line[pos:m.end()]
+            cand = (buf + " " + seg).strip() if buf else seg.strip()
+            if len(cand) >= _MIN_CHUNK and not _looks_like_abbrev(line[pos:m.start() + 1]):
+                chunks.append(cand)
+                buf = ""
+            else:
+                buf = cand
+            pos = m.end()
+        rest = line[pos:].strip()
+        if rest:
+            buf = (buf + " " + rest).strip() if buf else rest
+        # End of a (non-blank) line: treat as a soft boundary so list
+        # items and headings get their own breath.
+        if buf and len(buf) >= _MIN_CHUNK:
+            chunks.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        chunks.append(buf.strip())
+
+    # Hard-wrap any monster chunk so a single utterance can't run forever.
+    wrapped: List[str] = []
+    for c in chunks:
+        while len(c) > _MAX_CHUNK:
+            cut = c.rfind(" ", 0, _MAX_CHUNK)
+            if cut <= 0:
+                cut = _MAX_CHUNK
+            wrapped.append(c[:cut].strip())
+            c = c[cut:].strip()
+        if c:
+            wrapped.append(c)
+    return [w for w in wrapped if w]
+
+
+# ═════════════════════════════════════════════════════════════════════
+# SPEECH STREAMER — feed growing assistant text, get back complete
+# sentences ready to speak, code blocks skipped.
+# ═════════════════════════════════════════════════════════════════════
+
+class SpeechStreamer:
+    """Stateful: call feed() repeatedly with the *full* assistant content
+    so far; it returns any newly-completed sentences (from lines that are
+    fully received and outside code fences).  Call flush() at the end to
+    drain the final partial line.
+
+    Content grows by appended tokens only, so the committed prefix is
+    stable — we just remember how many lines we've folded in and how much
+    speakable text we've already emitted."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._committed_lines = 0
+        self._in_code = False
+        self._pending = ""        # speakable text not yet emitted as sentences
+
+    def _fold(self, lines: List[str]) -> None:
+        for ln in lines[self._committed_lines:]:
+            stripped = ln.strip()
+            if stripped.startswith("```"):
+                self._in_code = not self._in_code
+                continue
+            if self._in_code:
+                continue
+            c = _clean_inline(ln)
+            if c:
+                self._pending += c + "\n"
+        self._committed_lines = len(lines)
+
+    def _emit(self, final: bool) -> List[str]:
+        if not self._pending.strip():
+            if final:
+                self._pending = ""
+            return []
+        sentences = split_sentences(self._pending)
+        if not sentences:
+            return []
+        if final:
+            self._pending = ""
+            return sentences
+        # Mid-stream: hold the last fragment back unless the source clearly
+        # ended it with sentence punctuation (so we don't speak half a
+        # thought).  Heuristic: if pending doesn't end on a boundary, keep
+        # the final chunk buffered.
+        if re.search(r"[.!?…][\"')\]]?\s*$", self._pending):
+            self._pending = ""
+            return sentences
+        held = sentences[-1]
+        self._pending = held + "\n"
+        emit = sentences[:-1]
+        return emit
+
+    def feed(self, full_content: str) -> List[str]:
+        if "\n" not in full_content:
+            return []
+        completed = full_content.rsplit("\n", 1)[0]
+        self._fold(completed.split("\n"))
+        return self._emit(final=False)
+
+    def flush(self, full_content: str) -> List[str]:
+        self._fold(full_content.split("\n"))
+        return self._emit(final=True)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# SPEECH TO TEXT — record + transcribe via Groq Whisper
+# ═════════════════════════════════════════════════════════════════════
+
+class SpeechToText:
+    """Tap-to-record, tap-to-stop, then transcribe.  Recording is done by
+    a CLI tool so we don't drag in PortAudio/sounddevice; transcription
+    rides the operator's existing Groq key."""
+
+    def __init__(self, get_settings: Callable[[], Dict]) -> None:
+        self.get_settings = get_settings
+        self._proc: Optional[subprocess.Popen] = None
+        self._wav: Optional[str] = None
+        self._recorder = self._detect_recorder()
+
+    # ── capability ──
+    @staticmethod
+    def _detect_recorder() -> Optional[str]:
+        for name in ("parecord", "arecord", "ffmpeg"):
+            if shutil.which(name):
+                return name
+        return None
+
+    def recorder_available(self) -> bool:
+        return self._recorder is not None
+
+    def recorder_name(self) -> str:
+        return self._recorder or "none"
+
+    def has_key(self) -> bool:
+        return bool((self.get_settings().get("groq_api_key") or "").strip())
+
+    def unavailable_reason(self) -> Optional[str]:
+        if not self._recorder:
+            return ("No microphone recorder found.  Install pulseaudio-utils "
+                    "(parecord) or alsa-utils (arecord).")
+        if not self.has_key():
+            return ("No Groq API key — voice input transcribes through Groq.  "
+                    "Add a key in Settings → Backends.")
+        return None
+
+    # ── recording ──
+    def _build_record_cmd(self, path: str) -> List[str]:
+        if self._recorder == "parecord":
+            return ["parecord", "--channels=1", "--rate=16000",
+                    "--format=s16le", "--file-format=wav", path]
+        if self._recorder == "arecord":
+            return ["arecord", "-q", "-f", "S16_LE", "-c", "1",
+                    "-r", "16000", "-t", "wav", path]
+        # ffmpeg: try pulse, the most common desktop source
+        return ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "pulse", "-i", "default",
+                "-ac", "1", "-ar", "16000", "-y", path]
+
+    def start(self) -> bool:
+        if self._proc is not None:
+            return False
+        if not self._recorder:
+            return False
+        fd, path = tempfile.mkstemp(prefix="kali_rec_", suffix=".wav")
+        os.close(fd)
+        self._wav = path
+        cmd = self._build_record_cmd(path)
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _log(f"recording via {self._recorder} -> {path}")
+            return True
+        except Exception as e:
+            _log(f"record start failed: {e}")
+            self._proc = None
+            self._cleanup()
+            return False
+
+    def is_recording(self) -> bool:
+        return self._proc is not None
+
+    def stop(self) -> Optional[str]:
+        """Stop recording; return the WAV path (or None on failure)."""
+        p = self._proc
+        self._proc = None
+        if p is None:
+            return None
+        try:
+            # SIGINT lets ffmpeg/arecord finalise the WAV header cleanly.
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                p.terminate()
+                try:
+                    p.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+        except Exception as e:
+            _log(f"record stop hiccup: {e}")
+        path = self._wav
+        if path and os.path.exists(path) and os.path.getsize(path) > 44:
+            return path
+        self._cleanup()
+        return None
+
+    def cancel(self) -> None:
+        """Abort an in-progress recording and bin the file."""
+        p = self._proc
+        self._proc = None
+        if p is not None:
+            try:
+                p.terminate()
+                p.wait(timeout=1.0)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        self._cleanup()
+
+    def _cleanup(self) -> None:
+        if self._wav and os.path.exists(self._wav):
+            try:
+                os.remove(self._wav)
+            except Exception:
+                pass
+        self._wav = None
+
+    # ── transcription ──
+    def transcribe(self, wav_path: str) -> Tuple[str, Optional[str]]:
+        """Returns (text, error).  Blocks — call from a worker thread."""
+        s = self.get_settings()
+        key = (s.get("groq_api_key") or "").strip()
+        if not key:
+            self._safe_remove(wav_path)
+            return "", "No Groq API key set (Settings → Backends)."
+        model = (s.get("stt_model") or DEFAULT_STT_MODEL).strip()
+        lang = (s.get("stt_language") or "").strip()
+        try:
+            with open(wav_path, "rb") as f:
+                audio = f.read()
+        except Exception as e:
+            return "", f"could not read recording: {e}"
+        finally:
+            self._safe_remove(wav_path)
+
+        fields = {"model": model, "response_format": "json",
+                  "temperature": "0"}
+        if lang:
+            fields["language"] = lang
+        try:
+            raw = _post_multipart(
+                GROQ_TRANSCRIBE_URL,
+                {"Authorization": f"Bearer {key}"},
+                fields, "file", "audio.wav", audio, "audio/wav",
+                timeout=90)
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            _log(f"transcribe HTTP {e.code}: {body}")
+            return "", f"transcription failed (HTTP {e.code})"
+        except Exception as e:
+            _log(f"transcribe error: {e}")
+            return "", f"transcription failed: {e}"
+        try:
+            data = json.loads(raw)
+            text = (data.get("text") or "").strip()
+            return text, None
+        except Exception as e:
+            _log(f"transcribe parse error: {e}; raw={raw[:200]}")
+            return "", "could not parse transcription response"
+
+    @staticmethod
+    def _safe_remove(path: str) -> None:
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+def _post_multipart(url: str, headers: Dict[str, str],
+                    fields: Dict[str, str], file_field: str,
+                    filename: str, file_bytes: bytes,
+                    content_type: str = "application/octet-stream",
+                    timeout: int = 60) -> str:
+    """Minimal multipart/form-data POST built on urllib (no requests dep)."""
+    boundary = "----kalivoice" + os.urandom(16).hex()
+    crlf = b"\r\n"
+    body = BytesIO()
+    for k, v in fields.items():
+        body.write(b"--" + boundary.encode() + crlf)
+        body.write(('Content-Disposition: form-data; name="%s"' % k).encode()
+                   + crlf + crlf)
+        body.write(str(v).encode() + crlf)
+    body.write(b"--" + boundary.encode() + crlf)
+    body.write(('Content-Disposition: form-data; name="%s"; filename="%s"'
+                % (file_field, filename)).encode() + crlf)
+    body.write(("Content-Type: %s" % content_type).encode() + crlf + crlf)
+    body.write(file_bytes + crlf)
+    body.write(b"--" + boundary.encode() + b"--" + crlf)
+    data = body.getvalue()
+
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type",
+                   "multipart/form-data; boundary=%s" % boundary)
+    for k, v in headers.items():
+        req.add_header(k, v)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TEXT TO SPEECH — queue worker, Piper preferred, espeak fallback
+# ═════════════════════════════════════════════════════════════════════
+
+_PIPER_VOICE_DIRS = [
+    "~/.local/share/kali/voices",
+    "~/.local/share/piper-voices",
+    "~/.local/share/piper",
+    "~/.cache/piper",
+]
+_WAV_PLAYERS = [
+    ["paplay"],
+    ["aplay", "-q"],
+    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"],
+    ["play", "-q"],
+]
+
+
+class TextToSpeech:
+    """A background worker that speaks queued text.  speak() enqueues,
+    stop() flushes + interrupts.  Engine is chosen once and can be
+    re-chosen with reconfigure() when settings change."""
+
+    def __init__(self, get_settings: Callable[[], Dict]) -> None:
+        self.get_settings = get_settings
+        self._q: "queue.Queue[Tuple[int,str]]" = queue.Queue()
+        self._gen = 0
+        self._lock = threading.Lock()
+        self._cur: Optional[subprocess.Popen] = None
+        # Pause/resume: worker waits on _resume between sentences; the
+        # currently-playing process is frozen with SIGSTOP and thawed
+        # with SIGCONT.  _active tracks whether we're mid-utterance so we
+        # can fire an "idle" callback exactly once when the queue drains.
+        self._resume = threading.Event()
+        self._resume.set()
+        self._active = False
+        self._on_state: Optional[Callable[[str], None]] = None
+
+        self._engine: Optional[str] = None   # "piper" | "espeak" | None
+        self._espeak: Optional[str] = None
+        self._piper_cmd: Optional[List[str]] = None
+        self._piper_model: Optional[str] = None
+        self._piper_modelflag = "--model"
+        self._piper_outflag = "--output_file"
+        self._piper_probed = False           # probe lazily on first speak
+        self._player: Optional[List[str]] = None
+
+        self._detect()
+
+        self._worker = threading.Thread(target=self._run, daemon=True)
+        self._worker.start()
+
+    # ── capability detection ──
+    def _detect(self) -> None:
+        s = self.get_settings()
+        pref = (s.get("tts_engine") or "auto").strip().lower()
+
+        self._espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+        self._player = self._find_player()
+
+        piper_ok = False
+        if pref in ("auto", "piper"):
+            cmd = self._find_piper_cmd()
+            model = _find_piper_model(s)
+            if cmd and model and self._player:
+                # Don't probe here — running piper synchronously could
+                # stall the UI thread at startup / on settings change.
+                # We probe lazily on the first actual speak, in the worker
+                # thread, and fall back to espeak if it turns out broken.
+                self._piper_cmd = cmd
+                self._piper_model = model
+                self._piper_probed = False
+                piper_ok = True
+
+        if pref == "piper" and piper_ok:
+            self._engine = "piper"
+        elif pref == "espeak" and self._espeak:
+            self._engine = "espeak"
+        elif pref == "auto" and piper_ok:
+            self._engine = "piper"
+        elif pref == "auto" and self._espeak:
+            self._engine = "espeak"
+        elif self._espeak:               # requested piper but only espeak exists
+            self._engine = "espeak"
+        else:
+            self._engine = None
+        _log(f"tts engine = {self._engine} "
+             f"(piper={'y' if piper_ok else 'n'}, "
+             f"espeak={'y' if self._espeak else 'n'}, "
+             f"player={self._player[0] if self._player else 'none'})")
+
+    def reconfigure(self) -> None:
+        """Re-run detection (e.g. after the operator changes the engine or
+        voice in Settings).  Stops any in-flight speech first."""
+        self.stop()
+        with self._lock:
+            self._piper_cmd = None
+            self._piper_model = None
+        self._piper_probed = False
+        self._detect()
+
+    @staticmethod
+    def _find_player() -> Optional[List[str]]:
+        for p in _WAV_PLAYERS:
+            if shutil.which(p[0]):
+                return p
+        return None
+
+    @staticmethod
+    def _find_piper_cmd() -> Optional[List[str]]:
+        if shutil.which("piper"):
+            return ["piper"]
+        try:
+            r = subprocess.run([sys.executable, "-m", "piper", "--help"],
+                               capture_output=True, timeout=12)
+            blob = (r.stdout or b"") + (r.stderr or b"")
+            if r.returncode == 0 or b"piper" in blob.lower():
+                return [sys.executable, "-m", "piper"]
+        except Exception:
+            pass
+        return None
+
+    def _probe_piper(self, cmd: List[str], model: str) -> bool:
+        """Synthesize one tiny clip to learn which flag spelling this
+        build wants, and confirm it actually produces audio."""
+        variants = [("--model", "--output_file"),
+                    ("-m", "-f"),
+                    ("--model", "--output-file")]
+        for mflag, oflag in variants:
+            fd, wav = tempfile.mkstemp(prefix="kali_tts_probe_", suffix=".wav")
+            os.close(fd)
+            try:
+                full = list(cmd) + [mflag, model, oflag, wav]
+                p = subprocess.run(full, input=b"test",
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=40)
+                ok = (os.path.exists(wav) and os.path.getsize(wav) > 44)
+                if ok:
+                    self._piper_modelflag = mflag
+                    self._piper_outflag = oflag
+                    return True
+                _ = p
+            except Exception as e:
+                _log(f"piper probe ({mflag}/{oflag}) failed: {e}")
+            finally:
+                try:
+                    os.remove(wav)
+                except Exception:
+                    pass
+        return False
+
+    # ── status ──
+    def available(self) -> bool:
+        return self._engine is not None
+
+    def engine_name(self) -> str:
+        if self._engine == "piper" and self._piper_model:
+            return f"piper ({os.path.basename(self._piper_model)})"
+        return self._engine or "none"
+
+    def diagnostics(self) -> Dict[str, object]:
+        return {
+            "engine": self._engine,
+            "espeak": bool(self._espeak),
+            "piper": bool(self._piper_cmd and self._piper_model),
+            "piper_model": self._piper_model or "",
+            "player": self._player[0] if self._player else "",
+        }
+
+    # ── queue API ──
+    def speak(self, text: str) -> None:
+        if not self._engine:
+            return
+        text = (text or "").strip()
+        if not text:
+            return
+        self._q.put((self._gen, text))
+
+    def speak_all(self, text: str) -> None:
+        """Clean a whole message, split it, and queue every sentence."""
+        for s in split_sentences(clean_for_speech(text)):
+            self.speak(s)
+
+    def is_speaking(self) -> bool:
+        with self._lock:
+            return self._cur is not None or not self._q.empty()
+
+    def is_paused(self) -> bool:
+        return not self._resume.is_set()
+
+    def set_state_callback(self, fn: Optional[Callable[[str], None]]) -> None:
+        """fn(state) is called from the worker thread with one of
+        'speaking' | 'paused' | 'idle'.  Marshal to the UI thread yourself."""
+        self._on_state = fn
+
+    def _notify(self, state: str) -> None:
+        cb = self._on_state
+        if cb is not None:
+            try:
+                cb(state)
+            except Exception:
+                pass
+
+    def _signal_cur(self, sig: int) -> None:
+        with self._lock:
+            p = self._cur
+        if p is not None and p.poll() is None:
+            try:
+                p.send_signal(sig)
+            except Exception:
+                pass
+
+    def pause(self) -> None:
+        if not self._engine:
+            return
+        if not self._active and self._q.empty():
+            return
+        self._resume.clear()
+        self._signal_cur(signal.SIGSTOP)
+        self._notify("paused")
+
+    def resume(self) -> None:
+        if not self._engine:
+            return
+        self._signal_cur(signal.SIGCONT)
+        self._resume.set()
+        self._notify("speaking")
+
+    def stop(self) -> None:
+        self._gen += 1
+        try:
+            while True:
+                self._q.get_nowait()
+        except queue.Empty:
+            pass
+        # Make sure a paused process can actually be killed, and that the
+        # worker isn't left blocked on a cleared resume gate.
+        self._resume.set()
+        with self._lock:
+            p = self._cur
+            self._cur = None
+        if p and p.poll() is None:
+            try:
+                p.send_signal(signal.SIGCONT)
+            except Exception:
+                pass
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        self._active = False
+        self._notify("idle")
+
+    # ── worker ──
+    def _run(self) -> None:
+        while True:
+            try:
+                gen, text = self._q.get(timeout=0.2)
+            except queue.Empty:
+                # Nothing queued.  If we just finished talking and aren't
+                # paused, announce idle exactly once.
+                if (self._active and self._resume.is_set()):
+                    with self._lock:
+                        busy = self._cur is not None
+                    if not busy:
+                        self._active = False
+                        self._notify("idle")
+                continue
+            if gen != self._gen:
+                continue
+            # Block here while paused (without burning the item).
+            self._resume.wait()
+            if gen != self._gen:
+                continue
+            if not self._active:
+                self._active = True
+                self._notify("speaking")
+            try:
+                if self._engine == "piper":
+                    self._speak_piper(gen, text)
+                elif self._engine == "espeak":
+                    self._speak_espeak(gen, text)
+            except Exception as e:
+                _log(f"speak error: {e}")
+
+    def _register(self, p: subprocess.Popen) -> None:
+        with self._lock:
+            self._cur = p
+
+    def _clear(self, p: subprocess.Popen) -> None:
+        with self._lock:
+            if self._cur is p:
+                self._cur = None
+
+    def _rate(self) -> float:
+        try:
+            r = float(self.get_settings().get("tts_rate", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            r = 1.0
+        return max(0.5, min(2.0, r))
+
+    def _speak_piper(self, gen: int, text: str) -> None:
+        if gen != self._gen:
+            return
+        # First real use: confirm piper actually produces audio and learn
+        # its flag spelling.  If it's broken, fall back to espeak for good.
+        if not self._piper_probed:
+            ok = self._probe_piper(self._piper_cmd, self._piper_model)
+            self._piper_probed = True
+            if not ok:
+                _log("piper unusable at first speak; falling back to espeak")
+                self._engine = "espeak" if self._espeak else None
+                if self._engine == "espeak":
+                    self._speak_espeak(gen, text)
+                return
+        length_scale = max(0.5, min(2.0, 1.0 / self._rate()))
+        fd, wav = tempfile.mkstemp(prefix="kali_tts_", suffix=".wav")
+        os.close(fd)
+        try:
+            cmd = list(self._piper_cmd) + [
+                self._piper_modelflag, self._piper_model,
+                self._piper_outflag, wav]
+            if abs(length_scale - 1.0) > 0.01:
+                cmd += ["--length_scale", str(round(length_scale, 2))]
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            self._register(p)
+            try:
+                p.communicate(input=text.encode("utf-8"), timeout=60)
+            finally:
+                self._clear(p)
+            if gen != self._gen:
+                return
+            if os.path.exists(wav) and os.path.getsize(wav) > 44:
+                self._play_wav(gen, wav)
+        finally:
+            try:
+                os.remove(wav)
+            except Exception:
+                pass
+
+    def _play_wav(self, gen: int, wav: str) -> None:
+        if gen != self._gen or not self._player:
+            return
+        p = subprocess.Popen(list(self._player) + [wav],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        self._register(p)
+        try:
+            p.wait()
+        finally:
+            self._clear(p)
+
+    def _speak_espeak(self, gen: int, text: str) -> None:
+        if gen != self._gen:
+            return
+        s = self.get_settings()
+        wpm = int(max(80, min(400, 175 * self._rate())))
+        voice = (s.get("tts_voice_espeak") or "").strip()
+        cmd = [self._espeak, "-s", str(wpm)]
+        if voice:
+            cmd += ["-v", voice]
+        cmd += ["--", text]
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        self._register(p)
+        try:
+            p.wait()
+        finally:
+            self._clear(p)
+
+
+def _find_piper_model(settings: Dict) -> Optional[str]:
+    """Resolve a Piper voice .onnx: explicit setting first, then the
+    conventional cache/share dirs."""
+    explicit = (settings.get("tts_voice") or "").strip()
+    if explicit:
+        cand = os.path.expanduser(explicit)
+        if os.path.isfile(cand) and cand.endswith(".onnx"):
+            return cand
+        # A directory was given — take the first model in it.
+        if os.path.isdir(cand):
+            for f in sorted(os.listdir(cand)):
+                if f.endswith(".onnx"):
+                    return os.path.join(cand, f)
+    for d in _PIPER_VOICE_DIRS:
+        dd = os.path.expanduser(d)
+        if os.path.isdir(dd):
+            for root, _dirs, files in os.walk(dd):
+                for f in sorted(files):
+                    if f.endswith(".onnx"):
+                        return os.path.join(root, f)
+    return None
+
+
+# ── tiny self-test when run directly ─────────────────────────────────
+if __name__ == "__main__":
+    sample = ("Here's the plan.\n\n"
+              "First, **scan** the box:\n"
+              "```bash\nnmap -sV 10.0.0.1\n```\n"
+              "Then check the results. See https://example.com for refs. "
+              "Dr. Smith said it's fine, e.g. ports 22 and 80.")
+    print("=== clean_for_speech ===")
+    print(clean_for_speech(sample))
+    print("\n=== split_sentences ===")
+    for s in split_sentences(clean_for_speech(sample)):
+        print("  •", s)
+    print("\n=== streamer ===")
+    st = SpeechStreamer()
+    acc = ""
+    emitted = []
+    for tok in re.findall(r"\S+\s*|\n", sample):
+        acc += tok
+        emitted += st.feed(acc)
+    emitted += st.flush(acc)
+    for s in emitted:
+        print("  >", s)
