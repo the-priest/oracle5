@@ -60,7 +60,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1709,6 +1709,45 @@ class SettingsDialog(Adw.PreferencesDialog):
                                                   int(r.get_value())))
         wg.add(interval)
         b_page.add(wg)
+
+        # History / retention
+        hg = Adw.PreferencesGroup()
+        hg.set_title("Chat history")
+        hg.set_description(
+            "Keep things ephemeral.  Pinned chats are always kept.")
+
+        self.fresh_chat_row = Adw.SwitchRow()
+        self.fresh_chat_row.set_title("Start a new chat each launch")
+        self.fresh_chat_row.set_active(
+            bool(parent.settings.get("ephemeral_new_chat_on_launch", True)))
+        self.fresh_chat_row.connect(
+            "notify::active",
+            lambda r, _ps: self._set("ephemeral_new_chat_on_launch",
+                                     r.get_active()))
+        hg.add(self.fresh_chat_row)
+
+        self.discard_empty_row = Adw.SwitchRow()
+        self.discard_empty_row.set_title("Discard empty chats")
+        self.discard_empty_row.set_subtitle(
+            "Bin unused 'New chat' placeholders on close.")
+        self.discard_empty_row.set_active(
+            bool(parent.settings.get("discard_empty_chats", True)))
+        self.discard_empty_row.connect(
+            "notify::active",
+            lambda r, _ps: self._set("discard_empty_chats", r.get_active()))
+        hg.add(self.discard_empty_row)
+
+        retain_row = Adw.SpinRow.new_with_range(0, 720, 1)
+        retain_row.set_title("Auto-delete chats after (hours)")
+        retain_row.set_subtitle("Idle chats older than this go.  0 = keep forever.")
+        retain_row.set_value(
+            float(parent.settings.get("chat_retention_hours", 24)))
+        retain_row.connect(
+            "notify::value",
+            lambda r, *_: self._set("chat_retention_hours",
+                                    int(r.get_value())))
+        hg.add(retain_row)
+        b_page.add(hg)
         self.add(b_page)
 
         # ── VOICE ──────────────────────────────────────────
@@ -2168,16 +2207,47 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._refresh_sidebar)
 
     def _initial_chat_load(self):
-        """At launch, open the most recent chat if any exist; otherwise
-        start with a fresh one.  Previously we always called _new_chat
-        which spawned an empty 'New chat' every single launch — the
-        sidebar filled up with placeholders over time."""
+        """At launch: tidy up per the history policy, then either open a
+        brand-new chat (the default) or resume the most recent one."""
+        self._run_retention()
+        if self.settings.get("ephemeral_new_chat_on_launch", True):
+            self._new_chat()
+            return False
         chats = self.store.list_chats(limit=1)
         if chats:
             self._load_chat(chats[0].id)
         else:
             self._new_chat()
         return False
+
+    def _run_retention(self):
+        """Apply the chat-history policy: drop chats idle past the
+        retention window and abandoned empty placeholders.  Never removes
+        the chat currently open, nor pinned chats."""
+        keep = self.current_chat_id
+        try:
+            hours = float(self.settings.get("chat_retention_hours", 24) or 0)
+        except (TypeError, ValueError):
+            hours = 24.0
+        removed = 0
+        try:
+            if hours > 0:
+                removed += self.store.purge_old_chats(hours * 3600.0,
+                                                      keep_chat_id=keep)
+            if self.settings.get("discard_empty_chats", True):
+                removed += self.store.purge_empty_chats(keep_chat_id=keep)
+        except Exception as e:
+            log(f"retention error: {e}")
+        if removed:
+            log(f"retention: removed {removed} chat(s)")
+            self._refresh_sidebar()
+        return removed
+
+    def _periodic_retention(self):
+        """Hourly sweep so a long-running session still honours the
+        retention window (a startup-only purge would miss it)."""
+        self._run_retention()
+        return True   # keep the GLib timer alive
 
     # ── boot ────────────────────────────────────────────────────
 
@@ -2187,6 +2257,9 @@ class MainWindow(Adw.ApplicationWindow):
             if self.settings.get("watcher_enabled"):
                 self.watcher.start()
         threading.Thread(target=_bg, daemon=True).start()
+        # Roll old chats hourly so a session left open for days still
+        # honours the retention window.
+        GLib.timeout_add_seconds(3600, self._periodic_retention)
 
     # ── UI construction ─────────────────────────────────────────
 
@@ -2671,6 +2744,14 @@ class MainWindow(Adw.ApplicationWindow):
     # ── chat load / new ─────────────────────────────────────────
 
     def _new_chat(self):
+        # Don't leave an unused 'New chat' behind when starting another.
+        if (self.settings.get("discard_empty_chats", True)
+                and self.current_chat_id is not None):
+            try:
+                if self.store.count_messages(self.current_chat_id) == 0:
+                    self.store.delete_chat(self.current_chat_id)
+            except Exception:
+                pass
         backend, model = self.router.pick()
         cid = self.store.create_chat(
             title="New chat", model=model,
@@ -4226,6 +4307,14 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
         self.watcher.stop()
+        # Bin the open chat if it was never written to.
+        if (self.settings.get("discard_empty_chats", True)
+                and self.current_chat_id is not None):
+            try:
+                if self.store.count_messages(self.current_chat_id) == 0:
+                    self.store.delete_chat(self.current_chat_id)
+            except Exception:
+                pass
         try:
             self.store.close()
         except Exception:

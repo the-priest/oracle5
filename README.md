@@ -201,6 +201,17 @@ Everything is configurable in **Settings → Voice**: engine (auto / Piper / esp
 
 Set it up with the installer (on by default), or skip it with `--no-voice`. To add a different Piper voice later, drop an `.onnx` + `.onnx.json` into `~/.local/share/kali/voices/` or point Settings → Voice at it. Voices: <https://huggingface.co/rhasspy/piper-voices>.
 
+## Chat history (ephemeral by default)
+
+Kali treats history as disposable, which suits a security tool:
+
+- **New chat every launch.** Opening Kali drops you straight into a fresh chat.
+- **Empty chats are never kept.** A chat you open but never write to is binned — when you start another, when you close the app, and on the next launch. No "New chat" placeholders pile up.
+- **Old chats roll off.** Chats with no activity for more than 24 hours are deleted automatically (on launch and hourly while open).
+- **Pinned chats are exempt.** Pin a chat (right-click it in the sidebar) and it survives both the age limit and the empty sweep — that's how you keep something around.
+
+All three are tunable in **Settings → Behaviour → Chat history**: toggle the fresh-chat-on-launch and discard-empty behaviours, and set the retention window in hours (`0` = keep forever). Deletions are local and final; the installer keeps a one-time backup of the DB before any code update, but day-to-day purges are not backed up.
+
 ## What Kali can NOT do
 
 - **Rewrite her own code without you.** She *can* rewrite her own source and persona — but only by proposing a diff you approve, exactly like approving a sudo command. The Apply click is the gate. She cannot write Python that fails to parse (refused before any write), and she cannot touch the immutable `GUARDRAIL` block in `kali_persona.py`. A persona edit reloads live; a `kali.py`/`kali_core.py` edit needs a relaunch. This gate is deliberate and is not removed by any feature below.

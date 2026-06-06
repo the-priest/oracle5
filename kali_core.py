@@ -269,6 +269,14 @@ DEFAULT_SETTINGS = {
     "voice_autosend":   True,           # auto-send after a voice message transcribes
     "stt_model":        "whisper-large-v3-turbo",
     "stt_language":     "",             # ISO-639-1 hint (blank = auto-detect)
+
+    # ── Chat history / retention ──
+    # Ephemeral by default: start fresh each launch, roll off stale chats,
+    # and never keep abandoned empty placeholders.  Pinned chats are always
+    # exempt from auto-deletion.
+    "ephemeral_new_chat_on_launch": True,   # open a new chat at every launch
+    "chat_retention_hours":         24,     # delete chats idle > N hours (0 = keep)
+    "discard_empty_chats":          True,   # bin unused 'New chat' placeholders
 }
 
 # Add a key + model slot for every registered provider so the schema is
@@ -772,6 +780,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, ts);
+CREATE INDEX IF NOT EXISTS idx_chats_pinned_updated ON chats(pinned, updated_at);
 """
 
 
@@ -906,6 +915,40 @@ class ChatStore:
                 "SELECT COUNT(*) FROM messages WHERE chat_id=? AND role=?",
                 (chat_id, role)).fetchone()
         return row[0] if row else 0
+
+    def count_messages(self, chat_id: int) -> int:
+        """Total message count for a chat — used to detect unused chats
+        without allocating every row."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM messages WHERE chat_id=?",
+                (chat_id,)).fetchone()
+        return row[0] if row else 0
+
+    def purge_old_chats(self, max_age_seconds: float,
+                        keep_chat_id: Optional[int] = None) -> int:
+        """Delete unpinned chats idle longer than the cutoff (by last
+        activity).  Never touches pinned chats or `keep_chat_id`.
+        Cascades to their messages.  Returns how many were removed."""
+        if max_age_seconds <= 0:
+            return 0
+        cutoff = time.time() - max_age_seconds
+        keep = keep_chat_id if keep_chat_id is not None else -1
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM chats WHERE pinned=0 AND updated_at < ? "
+                "AND id != ?", (cutoff, keep))
+            return cur.rowcount or 0
+
+    def purge_empty_chats(self, keep_chat_id: Optional[int] = None) -> int:
+        """Delete unpinned chats that hold no messages at all (abandoned
+        'New chat' placeholders).  Returns how many were removed."""
+        keep = keep_chat_id if keep_chat_id is not None else -1
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM chats WHERE pinned=0 AND id != ? AND id NOT IN "
+                "(SELECT DISTINCT chat_id FROM messages)", (keep,))
+            return cur.rowcount or 0
 
 
 # ═════════════════════════════════════════════════════════════════════
