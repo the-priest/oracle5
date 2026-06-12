@@ -277,6 +277,13 @@ DEFAULT_SETTINGS = {
     "ephemeral_new_chat_on_launch": True,   # open a new chat at every launch
     "chat_retention_hours":         24,     # delete chats idle > N hours (0 = keep)
     "discard_empty_chats":          True,   # bin unused 'New chat' placeholders
+
+    # ── GitHub ──
+    # Optional Personal Access Token for the `github` tool.  Blank = public,
+    # unauthenticated access (60 req/hr, public repos only).  Set a token to
+    # reach your private repos and raise the limit to 5000 req/hr.  Also read
+    # from the GITHUB_TOKEN env var if this is blank.
+    "github_token": "",
 }
 
 # Add a key + model slot for every registered provider so the schema is
@@ -2419,6 +2426,575 @@ def tool_browser(action: str, target: str = "",
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+# ═════════════════════════════════════════════════════════════════════
+# WEB SEARCH & READ  — headless, no browser, no API key, no Playwright
+# ═════════════════════════════════════════════════════════════════════
+# Two fast tools that let the model actually look things up and read
+# pages without launching a GUI browser:
+#   • tool_web_search — query a search engine over HTTP, return ranked
+#     results (title / url / snippet) as text the model can read.
+#   • tool_web_read   — fetch one URL and return its readable text with
+#     scripts/markup stripped.
+# Both use only urllib (stdlib).  The GUI browser tool stays for
+# interactive / login-gated automation; these are for "search and read",
+# which is what 90% of "look this up" requests actually need.
+# ═════════════════════════════════════════════════════════════════════
+
+_WEB_UA = ("Mozilla/5.0 (X11; Linux x86_64; rv:124.0) "
+           "Gecko/20100101 Firefox/124.0")
+_WEB_TIMEOUT = 15
+
+
+def _web_get(url: str, timeout: int = _WEB_TIMEOUT,
+             data: Optional[bytes] = None) -> Tuple[int, str, str]:
+    """HTTP GET/POST returning (status, text, final_url).  Decodes the
+    body as utf-8 (lenient) and follows redirects (urllib default)."""
+    import urllib.parse  # noqa: F401  (ensures submodule is loaded)
+    headers = {
+        "User-Agent": _WEB_UA,
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method="POST" if data else "GET")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read(2_000_000)  # 2 MB hard cap
+        charset = "utf-8"
+        try:
+            charset = r.headers.get_content_charset() or "utf-8"
+        except Exception:
+            pass
+        return r.getcode(), raw.decode(charset, "replace"), r.geturl()
+
+
+def _ddg_unwrap(href: str) -> str:
+    """DuckDuckGo wraps result links as //duckduckgo.com/l/?uddg=ENC.
+    Return the real destination URL."""
+    import urllib.parse
+    if "uddg=" in href:
+        try:
+            q = urllib.parse.urlparse(
+                href if "://" in href else "https:" + href).query
+            uddg = urllib.parse.parse_qs(q).get("uddg")
+            if uddg:
+                return urllib.parse.unquote(uddg[0])
+        except Exception:
+            pass
+    if href.startswith("//"):
+        return "https:" + href
+    return href
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t\u00a0]+")
+_NL_RE = re.compile(r"\n\s*\n\s*\n+")
+
+
+def _html_to_text(html_src: str) -> str:
+    """Strip a chunk of HTML down to readable plain text."""
+    import html as _h
+    s = html_src
+    s = re.sub(r"(?is)<script.*?</script>", " ", s)
+    s = re.sub(r"(?is)<style.*?</style>", " ", s)
+    s = re.sub(r"(?is)<noscript.*?</noscript>", " ", s)
+    s = re.sub(r"(?s)<!--.*?-->", " ", s)
+    # Block elements → newlines so paragraphs survive.
+    s = re.sub(r"(?i)<(br|/p|/div|/li|/h[1-6]|/tr|/section|/article)\s*/?>",
+               "\n", s)
+    s = re.sub(r"(?i)<(p|div|li|h[1-6]|tr|section|article)(\s[^>]*)?>",
+               "\n", s)
+    s = _TAG_RE.sub("", s)
+    s = _h.unescape(s)
+    s = _WS_RE.sub(" ", s)
+    s = "\n".join(ln.strip() for ln in s.splitlines())
+    s = _NL_RE.sub("\n\n", s)
+    return s.strip()
+
+
+def _parse_ddg_html(html_src: str, limit: int) -> List[Dict[str, str]]:
+    """Parse results from html.duckduckgo.com/html/."""
+    import html as _h
+    out: List[Dict[str, str]] = []
+    # Each result anchor: <a ... class="result__a" href="...">Title</a>
+    for m in re.finditer(
+            r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+            html_src, re.IGNORECASE | re.DOTALL):
+        url = _ddg_unwrap(_h.unescape(m.group(1)))
+        title = _html_to_text(m.group(2))
+        if not url or not title:
+            continue
+        out.append({"title": title, "url": url, "snippet": ""})
+        if len(out) >= limit:
+            break
+    # Attach snippets in document order (best-effort alignment).
+    snips = [
+        _html_to_text(s.group(1))
+        for s in re.finditer(
+            r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>',
+            html_src, re.IGNORECASE | re.DOTALL)
+    ]
+    for i, r in enumerate(out):
+        if i < len(snips):
+            r["snippet"] = snips[i]
+    return out
+
+
+def _parse_ddg_lite(html_src: str, limit: int) -> List[Dict[str, str]]:
+    """Parse results from lite.duckduckgo.com/lite/ (fallback)."""
+    import html as _h
+    out: List[Dict[str, str]] = []
+    for m in re.finditer(
+            r'<a[^>]+class=[\'"]result-link[\'"][^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+            html_src, re.IGNORECASE | re.DOTALL):
+        url = _ddg_unwrap(_h.unescape(m.group(1)))
+        title = _html_to_text(m.group(2))
+        if url and title:
+            out.append({"title": title, "url": url, "snippet": ""})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _ddg_instant(query: str) -> Optional[str]:
+    """DuckDuckGo Instant-Answer API — a direct answer when one exists."""
+    import urllib.parse
+    try:
+        url = ("https://api.duckduckgo.com/?q="
+               + urllib.parse.quote(query)
+               + "&format=json&no_html=1&no_redirect=1&t=kali")
+        _, body, _ = _web_get(url)
+        data = json.loads(body)
+    except Exception:
+        return None
+    abstract = (data.get("AbstractText") or "").strip()
+    if abstract:
+        src = (data.get("AbstractSource") or "").strip()
+        u = (data.get("AbstractURL") or "").strip()
+        tail = f"  ({src} — {u})" if u else ""
+        return abstract + tail
+    ans = (data.get("Answer") or "").strip()
+    if ans:
+        return ans
+    defn = (data.get("Definition") or "").strip()
+    if defn:
+        return defn
+    return None
+
+
+def tool_web_search(query: str, max_results: int = 6) -> Dict[str, Any]:
+    """Search the web over HTTP and return ranked results as text.
+    No browser, no API key.  Tries DuckDuckGo HTML, then Lite, and always
+    folds in an Instant Answer when DDG has one."""
+    import urllib.parse
+    query = (query or "").strip()
+    if not query:
+        return {"ok": False, "error": "no query"}
+
+    max_results = max(1, min(int(max_results or 6), 12))
+    q = urllib.parse.quote(query)
+    results: List[Dict[str, str]] = []
+    errors: List[str] = []
+
+    # 1) DuckDuckGo HTML endpoint (richest: titles + snippets).
+    for endpoint, parser in (
+            (f"https://html.duckduckgo.com/html/?q={q}", _parse_ddg_html),
+            (f"https://lite.duckduckgo.com/lite/?q={q}", _parse_ddg_lite)):
+        if results:
+            break
+        try:
+            status, body, _ = _web_get(endpoint)
+            if status == 200:
+                results = parser(body, max_results)
+        except Exception as e:
+            errors.append(f"{type(e).__name__}: {str(e)[:120]}")
+
+    instant = _ddg_instant(query)
+
+    if not results and not instant:
+        err = "no results"
+        if errors:
+            joined = "; ".join(errors[:2])
+            err += f" ({joined})"
+            if any(t in joined for t in ("URLError", "timed out",
+                                         "Connection", "Name or service")):
+                err = f"search failed — likely offline or DNS issue ({joined})"
+        return {"ok": False, "error": err, "query": query}
+
+    # Build a compact, model-readable digest.
+    lines: List[str] = [f"Search results for: {query}"]
+    if instant:
+        lines.append(f"\nDirect answer: {instant}")
+    if results:
+        lines.append("")
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r['title']}")
+            lines.append(f"   {r['url']}")
+            if r.get("snippet"):
+                lines.append(f"   {r['snippet'][:300]}")
+    return {
+        "ok": True,
+        "query": query,
+        "instant_answer": instant or "",
+        "results": results,
+        "text": "\n".join(lines),
+    }
+
+
+def tool_web_read(url: str, max_chars: int = 6000) -> Dict[str, Any]:
+    """Fetch one URL and return its readable text (markup stripped).
+    Pairs with web_search: search → pick a result → read it."""
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "error": "no url"}
+    if "://" not in url:
+        url = "https://" + url
+    max_chars = max(500, min(int(max_chars or 6000), 20000))
+    try:
+        status, body, final_url = _web_get(url, timeout=20)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}",
+                "url": url}
+    if status != 200:
+        return {"ok": False, "error": f"HTTP {status}", "url": final_url}
+
+    # Title, if present.
+    title = ""
+    tm = re.search(r"(?is)<title[^>]*>(.*?)</title>", body)
+    if tm:
+        title = _html_to_text(tm.group(1))[:200]
+
+    text = _html_to_text(body)
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars].rsplit(" ", 1)[0] + " …"
+    return {
+        "ok": True,
+        "url": final_url,
+        "title": title,
+        "truncated": truncated,
+        "text": (f"{title}\n{final_url}\n\n{text}" if title else
+                 f"{final_url}\n\n{text}"),
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════
+# GITHUB  — browse and read any public repo (and your own private ones
+#           if a token is set).  Built on the public REST API + raw file
+#           host; no git clone needed to just look around.
+# ═════════════════════════════════════════════════════════════════════
+
+def _gh_token() -> str:
+    """PAT from settings, then GITHUB_TOKEN env.  Blank = unauthenticated."""
+    tok = ""
+    try:
+        tok = (load_settings().get("github_token") or "").strip()
+    except Exception:
+        tok = ""
+    return tok or os.environ.get("GITHUB_TOKEN", "").strip()
+
+
+def _gh_get(path: str, params: Optional[Dict[str, str]] = None,
+            raw_accept: bool = False) -> Tuple[int, Any, Dict[str, str]]:
+    """GET the GitHub REST API.  Returns (status, parsed-json-or-text, headers).
+    `path` is either a full URL or an api path like '/repos/owner/name'."""
+    import urllib.parse
+    if path.startswith("http"):
+        url = path
+    else:
+        url = "https://api.github.com" + path
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+    headers = {
+        "User-Agent": "oracle5-kali",
+        "Accept": ("application/vnd.github.raw+json" if raw_accept
+                   else "application/vnd.github+json"),
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    tok = _gh_token()
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = r.read(3_000_000).decode("utf-8", "replace")
+            hdrs = {k.lower(): v for k, v in r.headers.items()}
+            try:
+                return r.getcode(), json.loads(body), hdrs
+            except Exception:
+                return r.getcode(), body, hdrs
+    except urllib.error.HTTPError as e:
+        hdrs = {k.lower(): v for k, v in (e.headers or {}).items()}
+        detail = ""
+        try:
+            detail = json.loads(e.read().decode("utf-8", "replace")).get(
+                "message", "")
+        except Exception:
+            pass
+        return e.code, {"error": detail or str(e)}, hdrs
+
+
+def _gh_ratelimit_hint(status: int, hdrs: Dict[str, str]) -> str:
+    if status == 403 and hdrs.get("x-ratelimit-remaining") == "0":
+        return ("GitHub rate limit hit. Set a Personal Access Token in "
+                "Settings (github_token) or the GITHUB_TOKEN env var to raise "
+                "the limit from 60 to 5000 requests/hour.")
+    if status == 401:
+        return "GitHub rejected the token (401). Check github_token in Settings."
+    return ""
+
+
+def _gh_split_repo(repo: str) -> Tuple[str, str]:
+    """Accept 'owner/name' or a github URL; return (owner, name)."""
+    repo = (repo or "").strip()
+    repo = re.sub(r"^https?://github\.com/", "", repo)
+    repo = repo.rstrip("/").removesuffix(".git")
+    parts = [p for p in repo.split("/") if p]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return (parts[0] if parts else ""), ""
+
+
+def tool_github(action: str, query: str = "", repo: str = "",
+                user: str = "", path: str = "", ref: str = "",
+                limit: int = 10) -> Dict[str, Any]:
+    """Browse and read GitHub without cloning.  Actions:
+      • search_repos  query=…              — top repos matching a query
+      • search_code   query=…  repo=opt    — code search (token recommended)
+      • user_repos    user=…               — a user's repositories
+      • repo_info     repo=owner/name      — description, stars, language, …
+      • tree          repo=…  path=opt     — list files/dirs in the repo
+      • read          repo=…  path=file    — read one file's contents
+      • readme        repo=…               — the repo README, decoded
+      • releases      repo=…               — recent releases
+      • issues        repo=…               — recent open issues
+    Public by default; set github_token to reach private repos."""
+    action = (action or "").strip().lower()
+    limit = max(1, min(int(limit or 10), 30))
+
+    def fail(status, payload, hdrs):
+        msg = payload.get("error") if isinstance(payload, dict) else str(payload)
+        hint = _gh_ratelimit_hint(status, hdrs)
+        return {"ok": False, "error": f"GitHub {status}: {msg or 'request failed'}"
+                + (f" — {hint}" if hint else "")}
+
+    try:
+        if action == "search_repos":
+            if not query:
+                return {"ok": False, "error": "no query"}
+            st, data, h = _gh_get("/search/repositories",
+                                  {"q": query, "sort": "stars",
+                                   "order": "desc", "per_page": str(limit)})
+            if st != 200:
+                return fail(st, data, h)
+            items = data.get("items", [])[:limit]
+            lines = [f"GitHub repos for: {query}"]
+            out = []
+            for it in items:
+                full = it.get("full_name", "")
+                stars = it.get("stargazers_count", 0)
+                lang = it.get("language") or "—"
+                desc = (it.get("description") or "").strip()
+                lines.append(f"\n★ {stars}  {full}  [{lang}]")
+                if desc:
+                    lines.append(f"  {desc[:200]}")
+                lines.append(f"  https://github.com/{full}")
+                out.append({"full_name": full, "stars": stars,
+                            "language": lang, "description": desc,
+                            "url": f"https://github.com/{full}"})
+            return {"ok": True, "results": out, "text": "\n".join(lines)}
+
+        if action == "search_code":
+            if not query:
+                return {"ok": False, "error": "no query"}
+            q = query + (f" repo:{repo}" if repo else "")
+            st, data, h = _gh_get("/search/code",
+                                  {"q": q, "per_page": str(limit)})
+            if st != 200:
+                return fail(st, data, h)
+            items = data.get("items", [])[:limit]
+            lines = [f"Code matches for: {q}"]
+            out = []
+            for it in items:
+                full = it.get("repository", {}).get("full_name", "")
+                p = it.get("path", "")
+                url = it.get("html_url", "")
+                lines.append(f"\n{full} :: {p}\n  {url}")
+                out.append({"repo": full, "path": p, "url": url})
+            return {"ok": True, "results": out, "text": "\n".join(lines)}
+
+        if action == "user_repos":
+            u = (user or query).strip()
+            if not u:
+                return {"ok": False, "error": "no user"}
+            st, data, h = _gh_get(f"/users/{u}/repos",
+                                  {"sort": "updated", "per_page": str(limit)})
+            if st != 200:
+                return fail(st, data, h)
+            lines = [f"Repositories for {u}:"]
+            out = []
+            for it in (data if isinstance(data, list) else [])[:limit]:
+                name = it.get("name", "")
+                stars = it.get("stargazers_count", 0)
+                lang = it.get("language") or "—"
+                desc = (it.get("description") or "").strip()
+                lines.append(f"\n★ {stars}  {name}  [{lang}]")
+                if desc:
+                    lines.append(f"  {desc[:160]}")
+                out.append({"name": name, "stars": stars, "language": lang,
+                            "description": desc,
+                            "url": it.get("html_url", "")})
+            return {"ok": True, "results": out, "text": "\n".join(lines)}
+
+        if action == "repo_info":
+            owner, name = _gh_split_repo(repo)
+            if not (owner and name):
+                return {"ok": False, "error": "repo must be 'owner/name'"}
+            st, d, h = _gh_get(f"/repos/{owner}/{name}")
+            if st != 200:
+                return fail(st, d, h)
+            txt = (f"{d.get('full_name')}\n"
+                   f"{(d.get('description') or '').strip()}\n\n"
+                   f"★ {d.get('stargazers_count',0)}  "
+                   f"⑂ {d.get('forks_count',0)}  "
+                   f"language: {d.get('language') or '—'}  "
+                   f"default branch: {d.get('default_branch')}\n"
+                   f"open issues: {d.get('open_issues_count',0)}  "
+                   f"updated: {d.get('updated_at','')}\n"
+                   f"{d.get('html_url','')}")
+            return {"ok": True, "info": {
+                "full_name": d.get("full_name"),
+                "description": d.get("description"),
+                "stars": d.get("stargazers_count"),
+                "forks": d.get("forks_count"),
+                "language": d.get("language"),
+                "default_branch": d.get("default_branch"),
+                "open_issues": d.get("open_issues_count"),
+                "url": d.get("html_url")}, "text": txt}
+
+        if action == "tree":
+            owner, name = _gh_split_repo(repo)
+            if not (owner and name):
+                return {"ok": False, "error": "repo must be 'owner/name'"}
+            branch = ref
+            if not branch:
+                st, info, h = _gh_get(f"/repos/{owner}/{name}")
+                if st != 200:
+                    return fail(st, info, h)
+                branch = info.get("default_branch", "main")
+            st, d, h = _gh_get(
+                f"/repos/{owner}/{name}/git/trees/{branch}",
+                {"recursive": "1"})
+            if st != 200:
+                return fail(st, d, h)
+            entries = d.get("tree", [])
+            sub = (path or "").strip("/")
+            if sub:
+                entries = [e for e in entries
+                           if e.get("path", "").startswith(sub)]
+            entries = entries[:300]
+            lines = [f"{owner}/{name} @ {branch}"
+                     + (f"  (under {sub}/)" if sub else "")]
+            out = []
+            for e in entries:
+                mark = "📁" if e.get("type") == "tree" else "  "
+                lines.append(f"{mark} {e.get('path')}")
+                out.append({"path": e.get("path"), "type": e.get("type")})
+            if d.get("truncated"):
+                lines.append("… (tree truncated by GitHub)")
+            return {"ok": True, "branch": branch, "entries": out,
+                    "text": "\n".join(lines)}
+
+        if action == "read":
+            owner, name = _gh_split_repo(repo)
+            if not (owner and name and path):
+                return {"ok": False,
+                        "error": "need repo='owner/name' and path='file'"}
+            branch = ref
+            if not branch:
+                st, info, h = _gh_get(f"/repos/{owner}/{name}")
+                if st != 200:
+                    return fail(st, info, h)
+                branch = info.get("default_branch", "main")
+            raw_url = (f"https://raw.githubusercontent.com/{owner}/{name}/"
+                       f"{branch}/{path.lstrip('/')}")
+            try:
+                status, body, _ = _web_get(raw_url, timeout=20)
+            except Exception as e:
+                return {"ok": False,
+                        "error": f"read failed: {type(e).__name__}: {e}"}
+            if status != 200:
+                return {"ok": False, "error": f"HTTP {status} reading {path}"}
+            truncated = len(body) > 40000
+            shown = body[:40000] + ("\n… (truncated)" if truncated else "")
+            return {"ok": True, "repo": f"{owner}/{name}", "path": path,
+                    "branch": branch, "truncated": truncated,
+                    "text": f"{owner}/{name}@{branch}:{path}\n\n{shown}"}
+
+        if action == "readme":
+            owner, name = _gh_split_repo(repo)
+            if not (owner and name):
+                return {"ok": False, "error": "repo must be 'owner/name'"}
+            st, d, h = _gh_get(f"/repos/{owner}/{name}/readme",
+                               raw_accept=True)
+            if st != 200:
+                return fail(st, d, h)
+            if isinstance(d, dict) and d.get("content"):
+                import base64
+                try:
+                    d = base64.b64decode(d["content"]).decode(
+                        "utf-8", "replace")
+                except Exception:
+                    d = ""
+            text = d if isinstance(d, str) else ""
+            truncated = len(text) > 20000
+            if truncated:
+                text = text[:20000] + "\n… (truncated)"
+            return {"ok": True, "repo": f"{owner}/{name}",
+                    "truncated": truncated,
+                    "text": f"README — {owner}/{name}\n\n{text}"}
+
+        if action == "releases":
+            owner, name = _gh_split_repo(repo)
+            if not (owner and name):
+                return {"ok": False, "error": "repo must be 'owner/name'"}
+            st, d, h = _gh_get(f"/repos/{owner}/{name}/releases",
+                               {"per_page": str(limit)})
+            if st != 200:
+                return fail(st, d, h)
+            lines = [f"Releases — {owner}/{name}"]
+            out = []
+            for r in (d if isinstance(d, list) else [])[:limit]:
+                tag = r.get("tag_name", "")
+                nm = r.get("name") or tag
+                when = (r.get("published_at") or "")[:10]
+                lines.append(f"\n{tag}  {nm}  ({when})")
+                out.append({"tag": tag, "name": nm, "published": when,
+                            "url": r.get("html_url", "")})
+            return {"ok": True, "results": out, "text": "\n".join(lines)}
+
+        if action == "issues":
+            owner, name = _gh_split_repo(repo)
+            if not (owner and name):
+                return {"ok": False, "error": "repo must be 'owner/name'"}
+            st, d, h = _gh_get(f"/repos/{owner}/{name}/issues",
+                               {"state": "open", "per_page": str(limit)})
+            if st != 200:
+                return fail(st, d, h)
+            lines = [f"Open issues — {owner}/{name}"]
+            out = []
+            for it in (d if isinstance(d, list) else [])[:limit]:
+                if it.get("pull_request"):
+                    continue  # issues endpoint also returns PRs
+                num = it.get("number")
+                title = (it.get("title") or "").strip()
+                lines.append(f"\n#{num}  {title[:160]}")
+                out.append({"number": num, "title": title,
+                            "url": it.get("html_url", "")})
+            return {"ok": True, "results": out, "text": "\n".join(lines)}
+
+        return {"ok": False, "error": f"unknown github action '{action}'"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
 SEVERITY_WEIGHTS = {"info": 0, "low": 1, "medium": 3, "high": 8, "critical": 20}

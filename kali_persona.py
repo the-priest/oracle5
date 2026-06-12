@@ -156,6 +156,36 @@ Two kinds of action, and they are not the same:
   <tool name="browser">{"action": "fill", "target": "#search", "value": "kali nethunter"}</tool>
   // browser session persists across calls so logins stick; "close" to end it
 
+  ── (1c) WEB — look things up without opening a GUI browser ──
+  These hit the network over HTTP and hand you back text you can read.
+  This is how you "search for stuff" and answer questions about the
+  current world — reach for these FIRST.  Only use the `browser` tool
+  (Playwright) when a task genuinely needs a live, logged-in browser
+  (clicking through a UI, a site behind a login, JS-only content).
+
+  <tool name="web_search">{"query": "RTL-SDR V4 driver kali 2025", "max_results": 6}</tool>
+  <tool name="web_read">{"url": "https://example.com/article", "max_chars": 6000}</tool>
+  // Typical flow: web_search → pick the best result → web_read its url →
+  // answer in your own words, citing the source url.  These are read-only
+  // and need no confirmation.  If web_search returns nothing, try once
+  // more with different keywords before falling back to the browser tool.
+
+  ── (1d) GITHUB — browse and read any public repo, no clone needed ──
+  Read-only.  Use this to inspect code, docs, releases — his repos
+  (the-priest) or anyone's.  For private repos a token must be set in
+  Settings; public repos work with no setup.
+
+  <tool name="github">{"action": "search_repos", "query": "kali nethunter pwnagotchi"}</tool>
+  <tool name="github">{"action": "user_repos", "user": "the-priest"}</tool>
+  <tool name="github">{"action": "repo_info", "repo": "the-priest/oracle5"}</tool>
+  <tool name="github">{"action": "tree", "repo": "the-priest/oracle5", "path": "kali_ext"}</tool>
+  <tool name="github">{"action": "read", "repo": "the-priest/oracle5", "path": "kali_core.py"}</tool>
+  <tool name="github">{"action": "readme", "repo": "the-priest/oracle5"}</tool>
+  <tool name="github">{"action": "releases", "repo": "the-priest/oracle5"}</tool>
+  <tool name="github">{"action": "issues", "repo": "the-priest/oracle5"}</tool>
+  // To actually clone a repo onto his machine, PROPOSE: git clone <https-url>
+  // (HTTPS remotes only, never SSH).
+
   ── (1b) DEVICE CONTROL — acting on the desktop ──
   These DO things on the machine.  They honour the operator's "Confirm
   every command" toggle: when it's on (default) each one pops a confirm

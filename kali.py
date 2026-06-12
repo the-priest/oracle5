@@ -39,6 +39,7 @@ from kali_core import (
     tool_media_control, tool_screenshot, tool_read_screen,
     tool_make_dir, tool_copy_path, tool_move_path, tool_delete_path,
     tool_path_info, tool_open_url, tool_browser,
+    tool_web_search, tool_web_read, tool_github,
     parse_tool_calls, strip_tool_calls,
     is_online, is_sensitive_path, command_needs_sudo, Watcher,
     PROVIDERS, PROVIDERS_BY_KEY,
@@ -3518,6 +3519,27 @@ class MainWindow(Adw.ApplicationWindow):
                 lambda: tool_browser(
                     a.get("action", ""), a.get("target", ""),
                     a.get("value", ""))),
+
+            # ── Web search & read (read-only: simple, headless) ──
+            # Fast HTTP search/read — no GUI browser, no API key.  This is
+            # the path the model should reach for to "look something up";
+            # the browser tool is reserved for interactive/login-gated work.
+            "web_search":        lambda a: self._tool_simple(
+                lambda: tool_web_search(
+                    a.get("query", a.get("q", "")),
+                    _safe_int(a.get("max_results", 6), 6))),
+            "web_read":          lambda a: self._tool_simple(
+                lambda: tool_web_read(
+                    a.get("url", ""),
+                    _safe_int(a.get("max_chars", 6000), 6000))),
+
+            # ── GitHub (read-only: simple, headless) ──
+            "github":            lambda a: self._tool_simple(
+                lambda: tool_github(
+                    a.get("action", ""), a.get("query", ""),
+                    a.get("repo", ""), a.get("user", ""),
+                    a.get("path", ""), a.get("ref", a.get("branch", "")),
+                    _safe_int(a.get("limit", 10), 10))),
         }
         # Merge sidecar tools (memory_*, skill_list, skill_run).  Returns an
         # empty dict unless the matching feature is enabled, so stock Kali is
