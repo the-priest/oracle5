@@ -435,6 +435,22 @@ for f in "${REQUIRED_FILES[@]}"; do
 done
 ok "incoming files parse cleanly"
 
+# Report the version transition (purely informational; never blocks).
+_ver_of() {
+  grep -oE 'VERSION[[:space:]]*=[[:space:]]*"[^"]+"' "$1" 2>/dev/null \
+    | head -1 | sed -E 's/.*"([^"]+)".*/\1/'
+}
+NEW_VER="$(_ver_of "${SRC_DIR}/kali.py")"
+OLD_VER=""
+[ -f "${INSTALL_DIR}/kali.py" ] && OLD_VER="$(_ver_of "${INSTALL_DIR}/kali.py")"
+if [ -n "${OLD_VER}" ] && [ -n "${NEW_VER}" ] && [ "${OLD_VER}" != "${NEW_VER}" ]; then
+  ok "updating Kali ${OLD_VER} → ${NEW_VER}"
+elif [ -n "${OLD_VER}" ] && [ "${OLD_VER}" = "${NEW_VER}" ]; then
+  say "Kali ${NEW_VER} already current — refreshing files"
+elif [ -n "${NEW_VER}" ]; then
+  ok "installing Kali ${NEW_VER}"
+fi
+
 for f in "${REQUIRED_FILES[@]}"; do
   cp "${SRC_DIR}/${f}" "${INSTALL_DIR}/${f}"
 done

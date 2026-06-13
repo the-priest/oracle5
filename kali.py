@@ -40,6 +40,9 @@ from kali_core import (
     tool_make_dir, tool_copy_path, tool_move_path, tool_delete_path,
     tool_path_info, tool_open_url, tool_browser,
     tool_web_search, tool_web_read, tool_github,
+    quick_facts as tool_quick_facts,
+    sudo_cached, detect_urgency, looks_degraded,
+    note_command, recent_duplicate,
     parse_tool_calls, strip_tool_calls,
     is_online, is_sensitive_path, command_needs_sudo, Watcher,
     PROVIDERS, PROVIDERS_BY_KEY,
@@ -1899,6 +1902,19 @@ class SettingsDialog(Adw.PreferencesDialog):
                                   lambda r: self._set("stt_language",
                                                       r.get_text().strip()))
         ig.add(self.stt_lang_row)
+
+        stt_test_row = Adw.ActionRow()
+        stt_test_row.set_title("Test microphone")
+        stt_test_row.set_subtitle(
+            "Records ~4s, transcribes, shows the exact result or error.")
+        self.stt_test_btn = Gtk.Button(label="● Record 4s")
+        self.stt_test_btn.set_valign(Gtk.Align.CENTER)
+        self.stt_test_btn.add_css_class("icon-button")
+        self.stt_test_btn.set_sensitive(
+            stt is not None and stt.recorder_available())
+        self.stt_test_btn.connect("clicked", self._on_stt_test)
+        stt_test_row.add_suffix(self.stt_test_btn)
+        ig.add(stt_test_row)
         v_page.add(ig)
         self.add(v_page)
 
@@ -2145,6 +2161,40 @@ class SettingsDialog(Adw.PreferencesDialog):
             return
         tts.stop()
         tts.speak_all("Voice check. Kali is online and ready.")
+
+    def _on_stt_test(self, _btn):
+        stt = getattr(self.win, "stt", None)
+        if stt is None or not stt.recorder_available():
+            self.win._show_toast("No microphone recorder available.")
+            return
+        reason = stt.unavailable_reason()
+        if reason:
+            self.win._show_toast(reason, timeout=6)
+            return
+        self.stt_test_btn.set_sensitive(False)
+        self.stt_test_btn.set_label("● Listening 4s…")
+        self.win._show_toast("Listening for 4 seconds — say something.", timeout=4)
+
+        def _bg():
+            text, err = stt.test_capture(4.0)
+
+            def _show():
+                self.stt_test_btn.set_sensitive(True)
+                self.stt_test_btn.set_label("● Record 4s")
+                if err:
+                    self.win._show_toast(f"Mic test failed: {err}", timeout=8)
+                    self.win.terminal_log(f"mic test FAILED: {err}", "error")
+                elif text:
+                    self.win._show_toast(f"Heard: “{text}”", timeout=8)
+                    self.win.terminal_log(f"mic test OK: {text}", "ok")
+                else:
+                    self.win._show_toast(
+                        "Recorded but transcript was empty — likely silence "
+                        "or wrong input source.", timeout=8)
+                    self.win.terminal_log("mic test: empty transcript", "error")
+                return False
+            GLib.idle_add(_show)
+        threading.Thread(target=_bg, daemon=True).start()
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -3014,6 +3064,20 @@ class MainWindow(Adw.ApplicationWindow):
             return
         buf.set_text("")
 
+        # (#3) /panic — jump straight to tool-first triage: no preamble, run
+        # a batched health-check sweep, report what's abnormal.  Expands into
+        # a directive the model acts on (the read-only checks batch into one
+        # round-trip via the parallel executor).
+        if text.lower().split() and text.lower().split()[0] in ("/panic",):
+            text = ("[PANIC MODE] Fast triage — skip ALL preamble and "
+                    "questions. In ONE turn, fire these read-only checks "
+                    "together: quick_facts, system_info, disk_usage, "
+                    "processes, network_status, service_status, and "
+                    "journal_tail (recent errors). Then give a tight bullet "
+                    "summary of anything abnormal and the single most likely "
+                    "problem. Look first, report second.")
+            self._show_toast("Panic mode — running health sweep.", timeout=4)
+
         # A new message means stop reading the previous reply out loud.
         if self.tts:
             self.tts.stop()
@@ -3259,6 +3323,27 @@ class MainWindow(Adw.ApplicationWindow):
 
         history = self._build_history_for_model(chat_id)
         addendum = self.settings.get("system_prompt", "")
+        # (#3) Urgency fast-path: if the operator's latest message reads as
+        # urgent, tell the model (for THIS turn only) to skip preamble and
+        # go straight to the most likely fix.
+        if self.settings.get("urgency_fast_path", True) and not self._tools_locked:
+            try:
+                last_user = ""
+                for m in reversed(history):
+                    if m.get("role") == "user" \
+                            and "<tool_result>" not in (m.get("content") or ""):
+                        last_user = m.get("content", "")
+                        break
+                u = detect_urgency(last_user)
+                if u.get("urgent"):
+                    addendum = (addendum + "\n\n[URGENT: the operator is in a "
+                                "hurry (markers: "
+                                + ", ".join(u["markers"]) + "). Skip pleasantries "
+                                "and context-gathering. Lead with the single most "
+                                "likely fix or answer, then offer detail.]").strip()
+                    self.terminal_log("⚡ urgency fast-path engaged", "dim")
+            except Exception:
+                pass
         if getattr(self, "_ext", None):
             try:
                 extra = self._ext.system_prompt_block()
@@ -3418,6 +3503,27 @@ class MainWindow(Adw.ApplicationWindow):
                 self._set_working(True, "running tool…")
                 self._execute_tool_calls(executable[:1])
         else:
+            # (#7) Degraded-output check: if the model returned junk (empty,
+            # one-word, or stuck repeating) and it wasn't a deliberate stop,
+            # flag it.  With auto_fallback_on_degraded on, hop to the next
+            # provider that has a key so the NEXT turn retries elsewhere.
+            if (not cancelled and not executable
+                    and looks_degraded(final)):
+                self.terminal_log("⚠ response looked degraded (empty/"
+                                  "repetitive)", "error")
+                if self.settings.get("auto_fallback_on_degraded", False):
+                    nxt = self._next_provider_with_key()
+                    if nxt:
+                        self.settings["active_provider"] = nxt
+                        save_settings(self.settings)
+                        self._show_toast(
+                            f"Response looked off — switched to {nxt} for "
+                            "the next reply.", timeout=6)
+                        self._refresh_subtitle()
+                else:
+                    self._show_toast(
+                        "That reply looked degraded. Try again, or enable "
+                        "auto-fallback in Settings → Behaviour.", timeout=6)
             # Turn has fully settled (no tool chaining).  Record it for
             # persistent memory in the background — no-op unless memory is on.
             if getattr(self, "_ext", None) and not cancelled:
@@ -3520,9 +3626,14 @@ class MainWindow(Adw.ApplicationWindow):
             return lambda: tool_list_dir(a.get("path", "."))
         if n == "find_file":
             return lambda: tool_find_file(
-                a.get("pattern", "*"), a.get("search_path", "~"))
+                a.get("pattern", "*"), a.get("search_path", "~"),
+                i(a.get("max_results", 50), 50),
+                a.get("min_size_kb", 0), a.get("max_size_kb", 0),
+                a.get("modified_within_days", 0))
         if n == "path_info":
             return lambda: tool_path_info(a.get("path", ""))
+        if n == "quick_facts":
+            return lambda: tool_quick_facts()
         if n == "read_file":
             p = a.get("path", "")
             # Sensitive reads keep their confirm gate — never auto-batched.
@@ -3616,7 +3727,12 @@ class MainWindow(Adw.ApplicationWindow):
             "read_file":         lambda a: self._tool_read_file(a.get("path", "")),
             "list_dir":          lambda a: self._tool_list_dir(a.get("path", ".")),
             "find_file":         lambda a: self._tool_find_file(
-                a.get("pattern", "*"), a.get("search_path", "~")),
+                a.get("pattern", "*"), a.get("search_path", "~"),
+                _safe_int(a.get("max_results", 50), 50),
+                a.get("min_size_kb", 0), a.get("max_size_kb", 0),
+                a.get("modified_within_days", 0)),
+            "quick_facts":       lambda a: self._tool_simple(
+                lambda: tool_quick_facts()),
             "system_info":       lambda a: self._tool_simple(tool_system_info),
             "disk_usage":        lambda a: self._tool_simple(tool_disk_usage),
             "processes":         lambda a: self._tool_simple(
@@ -3883,13 +3999,24 @@ class MainWindow(Adw.ApplicationWindow):
             GLib.idle_add(self._feed_tool_result, text)
         threading.Thread(target=_bg, daemon=True).start()
 
-    def _tool_find_file(self, pattern, search_path):
+    def _tool_find_file(self, pattern, search_path, max_results=50,
+                        min_size_kb=0, max_size_kb=0,
+                        modified_within_days=0):
         def _bg():
             self.terminal_log(f"→ find {pattern} in {search_path}", "info")
-            r = tool_find_file(pattern, search_path)
+            r = tool_find_file(pattern, search_path, max_results,
+                               min_size_kb, max_size_kb, modified_within_days)
             if r.get("ok"):
-                text = (f"find {pattern} in {r['search_path']}: "
-                        f"{r['count']} hit(s)\n" + "\n".join(r["found"]))
+                lines = [f"find {pattern} in {r['search_path']}: "
+                         f"{r['count']} hit(s)"]
+                for hit in r["found"]:
+                    if isinstance(hit, dict):
+                        sz = hit.get("size")
+                        szs = f"  ({sz}B)" if sz is not None else ""
+                        lines.append(f"  {hit.get('path')}{szs}")
+                    else:
+                        lines.append(f"  {hit}")
+                text = "\n".join(lines)
                 self.terminal_log(f"✓ {r['count']} found", "ok")
             else:
                 text = f"find_file error: {r.get('error')}"
@@ -4057,6 +4184,26 @@ class MainWindow(Adw.ApplicationWindow):
             threading.Thread(target=_fbg, daemon=True).start()
             return
 
+        # ── (#4) command de-duplication ──
+        # Record every command that reaches execution; if the operator opted
+        # in, warn when the exact command was already run very recently (a
+        # stale re-issue or an accidental double-tap).  Non-blocking.
+        if self.settings.get("warn_duplicate_commands", False):
+            try:
+                if recent_duplicate(command, 600):
+                    self._show_toast(
+                        "You just ran this command. Intentional, or stale?",
+                        timeout=5)
+                    self.terminal_log(
+                        f"⚠ duplicate command within 10m: {command[:60]}",
+                        "dim")
+            except Exception:
+                pass
+        try:
+            note_command(command)
+        except Exception:
+            pass
+
         # Long-running ops (package work, scans, builds) need more than the
         # old hard 60s or they time out mid-apt and look broken.  Match on
         # the actual COMMAND TOKENS, not raw substrings — the old `k in low`
@@ -4128,11 +4275,21 @@ class MainWindow(Adw.ApplicationWindow):
         # the command needs root (to collect the password), or — for a
         # model-initiated run — when the operator asked to confirm every
         # command.
-        needs_confirm = command_needs_sudo(command) or (
-            self.settings.get("confirm_all_commands", True) and not from_card)
-        if needs_confirm:
+        # (#9) If a root command is needed but sudo already has a cached
+        # credential this session, skip the password prompt and run silently
+        # (when auto_sudo_when_cached is on).  Approval gating is separate:
+        # confirm_all_commands still shows the dialog for model-initiated runs.
+        sudo_needed = command_needs_sudo(command)
+        have_cached_sudo = (sudo_needed
+                            and self.settings.get("auto_sudo_when_cached", True)
+                            and sudo_cached())
+        need_approval = (self.settings.get("confirm_all_commands", True)
+                         and not from_card)
+        if need_approval or (sudo_needed and not have_cached_sudo):
             confirm_command_dialog(self, command, reason or "no reason", decide)
         else:
+            if have_cached_sudo:
+                self.terminal_log("• using cached sudo credential", "dim")
             run_bg(None)
 
     def _tool_audit(self):
@@ -4285,6 +4442,21 @@ class MainWindow(Adw.ApplicationWindow):
         head = content[:HISTORY_TRIM_HEAD_CHARS]
         return (head + f"\n…[earlier tool output trimmed to save tokens — "
                 f"{len(content)} chars originally]\n</tool_result>")
+
+    def _next_provider_with_key(self) -> Optional[str]:
+        """Pick the next cloud provider (after the current active one) that
+        has an API key set — for degraded-output fallback.  Returns None if
+        no other configured provider is available."""
+        cur = (self.settings.get("active_provider") or "").strip()
+        keys = [p.key for p in PROVIDERS]
+        if cur in keys:
+            order = keys[keys.index(cur) + 1:] + keys[:keys.index(cur)]
+        else:
+            order = keys
+        for k in order:
+            if (self.settings.get(f"{k}_api_key") or "").strip():
+                return k
+        return None
 
     def _build_history_for_model(self, chat_id: Optional[int] = None):
         out = []

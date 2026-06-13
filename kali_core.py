@@ -256,6 +256,11 @@ DEFAULT_SETTINGS = {
     "worker_enabled":          False,   # the headless systemd --user companion
     "worker_interval_seconds": 300,     # worker poll cadence (when enabled)
     "one_command_at_a_time":   True,    # never propose/run >1 command per message
+    # ── Self-improvement behaviours ──
+    "warn_duplicate_commands": False,   # warn when re-running the same cmd <10m
+    "auto_fallback_on_degraded": False, # hop provider if a reply comes back junk
+    "urgency_fast_path":       True,    # skip preamble when the operator is urgent
+    "auto_sudo_when_cached":   True,    # silently use sudo if already authenticated
 
     # ── Voice (speech in / speech out) ──
     # Voice input transcribes through Groq's Whisper endpoint (reuses the
@@ -293,9 +298,12 @@ DEFAULT_SETTINGS = {
 
 # Add a key + model slot for every registered provider so the schema is
 # always complete (e.g. "groq_api_key", "groq_model", "novita_api_key"…).
+# Also record each provider's base_url — voice transcription derives its
+# endpoint from this, so STT always rides the same host chat uses.
 for _p in PROVIDERS:
     DEFAULT_SETTINGS.setdefault(f"{_p.key}_api_key", "")
     DEFAULT_SETTINGS.setdefault(f"{_p.key}_model", _p.default_model)
+    DEFAULT_SETTINGS.setdefault(f"{_p.key}_base_url", _p.base_url)
 
 
 def load_settings() -> Dict[str, Any]:
@@ -1717,24 +1725,208 @@ def tool_network_status() -> Dict[str, Any]:
 
 def tool_find_file(pattern: str,
                    search_path: str = "~",
-                   max_results: int = 50) -> Dict[str, Any]:
-    """Find files by name pattern."""
+                   max_results: int = 50,
+                   min_size_kb: float = 0,
+                   max_size_kb: float = 0,
+                   modified_within_days: float = 0) -> Dict[str, Any]:
+    """Find files by name pattern, with optional size and modified-time
+    filters.  min_size_kb/max_size_kb bound file size; modified_within_days
+    limits to files changed in the last N days.  Returns each hit with its
+    size and mtime so callers can summarise rather than dump raw paths."""
     if not _have("find"):
         return {"ok": False, "error": "find not available"}
     rp = os.path.expanduser(search_path)
     if not os.path.isdir(rp):
         return {"ok": False, "error": f"not a directory: {search_path}"}
-    rc, out, err = _ro(["find", rp, "-name", pattern, "-type", "f"],
-                       timeout=30)
+    cmd = ["find", rp, "-type", "f", "-name", pattern]
+    try:
+        if min_size_kb and float(min_size_kb) > 0:
+            cmd += ["-size", f"+{int(float(min_size_kb))}k"]
+        if max_size_kb and float(max_size_kb) > 0:
+            cmd += ["-size", f"-{int(float(max_size_kb))}k"]
+        if modified_within_days and float(modified_within_days) > 0:
+            # -mtime -N = modified within the last N*24h
+            cmd += ["-mtime", f"-{int(float(modified_within_days))}"]
+    except (TypeError, ValueError):
+        pass
+    rc, out, err = _ro(cmd, timeout=30)
     if rc == 124:
         return {"ok": False, "error": "find timed out after 30s — "
                                        "narrow the search path or pattern",
                 "partial": out.splitlines()[:max_results]}
-    all_lines = out.splitlines()
-    results = all_lines[:max_results]
+    all_lines = [ln for ln in out.splitlines() if ln]
+    paths = all_lines[:max_results]
+    found = []
+    for p in paths:
+        info = {"path": p}
+        try:
+            st = os.stat(p)
+            info["size"] = st.st_size
+            info["mtime"] = datetime.datetime.fromtimestamp(
+                st.st_mtime).isoformat(timespec="seconds")
+        except Exception:
+            pass
+        found.append(info)
     return {"ok": True, "pattern": pattern, "search_path": rp,
-            "found": results, "count": len(results),
+            "filters": {"min_size_kb": min_size_kb,
+                        "max_size_kb": max_size_kb,
+                        "modified_within_days": modified_within_days},
+            "found": found, "count": len(found),
             "truncated": len(all_lines) > max_results}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# SELF-IMPROVEMENT HELPERS
+# Small, pure, dependency-free utilities backing the operator's backlog:
+# cached system facts, sudo-state detection, urgency parsing, degraded-
+# response detection, and command de-duplication.  Kept here (not the GUI)
+# so they're unit-testable and reusable by the background worker too.
+# ═════════════════════════════════════════════════════════════════════
+
+# ── (#2) Cache common system facts for a short TTL so back-to-back
+#         questions ("what's my IP / uptime / free space") don't re-scan. ──
+_FACTS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+FACTS_TTL_S = 60
+
+
+def quick_facts(force: bool = False) -> Dict[str, Any]:
+    """Cheap, cached snapshot: hostname, primary IP, uptime, load, and
+    root-filesystem free space.  Cached for FACTS_TTL_S seconds."""
+    now = time.time()
+    if (not force and _FACTS_CACHE["data"] is not None
+            and now - _FACTS_CACHE["ts"] < FACTS_TTL_S):
+        cached = dict(_FACTS_CACHE["data"])
+        cached["cached"] = True
+        cached["age_s"] = round(now - _FACTS_CACHE["ts"], 1)
+        return cached
+
+    data: Dict[str, Any] = {"ok": True, "cached": False, "age_s": 0.0}
+    try:
+        data["hostname"] = socket.gethostname()
+    except Exception:
+        data["hostname"] = ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))
+            data["ip"] = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        data["ip"] = ""
+    try:
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        h, rem = divmod(int(up), 3600)
+        data["uptime"] = f"{h}h {rem // 60}m"
+    except Exception:
+        data["uptime"] = ""
+    try:
+        data["load"] = os.getloadavg()
+    except Exception:
+        data["load"] = None
+    try:
+        du = shutil.disk_usage("/")
+        data["disk_free_gb"] = round(du.free / 1e9, 1)
+        data["disk_total_gb"] = round(du.total / 1e9, 1)
+        data["disk_pct_used"] = round(
+            100 * (du.total - du.free) / du.total, 1)
+    except Exception:
+        pass
+
+    _FACTS_CACHE["ts"] = now
+    _FACTS_CACHE["data"] = {k: v for k, v in data.items()
+                            if k not in ("cached", "age_s")}
+    return data
+
+
+# ── (#9) Is a sudo credential already cached this session? ──
+def sudo_cached() -> bool:
+    """True if `sudo` would run without prompting (a fresh timestamp exists).
+    Lets the host auto-prepend sudo when already authenticated, or warn
+    'will need your password' when not.  Never itself prompts."""
+    if not _have("sudo"):
+        return False
+    try:
+        r = subprocess.run(["sudo", "-n", "true"],
+                           stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=3)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+# ── (#3) Urgency detection on the operator's message ──
+_URGENCY_WORDS = ("urgent", "asap", "immediately", "emergency",
+                  "fix this", "right now", " now!", "hurry", "stop",
+                  "broken", "is down", "crashed", "not working")
+
+
+def detect_urgency(message: str) -> Dict[str, Any]:
+    """Scan the start of a message for urgency markers.  Returns
+    {urgent, score, markers} so the host can skip preamble and go straight
+    to the most likely fix."""
+    head = (message or "")[:80]
+    low = head.lower()
+    markers = []
+    score = 0
+    for w in _URGENCY_WORDS:
+        if w in low:
+            markers.append(w)
+            score += 2
+    letters = [c for c in head if c.isalpha()]
+    if letters and sum(c.isupper() for c in letters) / len(letters) > 0.7 \
+            and len(letters) >= 4:
+        markers.append("ALLCAPS")
+        score += 2
+    if head.count("!") >= 1:
+        markers.append("exclamation")
+        score += 1
+    return {"urgent": score >= 2, "score": score, "markers": markers}
+
+
+# ── (#7) Detect a degraded / junk model response ──
+def looks_degraded(text: str) -> bool:
+    """Heuristic: is this assistant turn empty, near-empty, or stuck
+    repeating?  Used to trigger a provider fallback for the NEXT turn."""
+    t = (text or "").strip()
+    if len(t) < 2:
+        return True
+    words = t.split()
+    if len(words) >= 8:
+        uniq = len(set(w.lower() for w in words))
+        if uniq <= max(2, len(words) // 10):
+            return True
+        if len(set(words[-6:])) == 1:
+            return True
+    if len(t) >= 12 and len(set(t)) <= 2:
+        return True
+    return False
+
+
+# ── (#4) Command de-duplication ──
+_CMD_LOG: List[Tuple[str, float]] = []
+
+
+def note_command(cmd: str) -> None:
+    """Record that a command was approved/run, for duplicate detection."""
+    c = (cmd or "").strip()
+    if not c:
+        return
+    _CMD_LOG.append((c, time.time()))
+    if len(_CMD_LOG) > 50:
+        del _CMD_LOG[:-50]
+
+
+def recent_duplicate(cmd: str, window_s: float = 600) -> bool:
+    """True if this exact command was already approved within window_s."""
+    c = (cmd or "").strip()
+    if not c:
+        return False
+    now = time.time()
+    return any(prev == c and (now - ts) <= window_s
+               for prev, ts in _CMD_LOG)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -3003,7 +3195,6 @@ def tool_github(action: str, query: str = "", repo: str = "",
 
 
 SEVERITY_WEIGHTS = {"info": 0, "low": 1, "medium": 3, "high": 8, "critical": 20}
-
 
 @dataclass
 class Finding:

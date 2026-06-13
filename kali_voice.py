@@ -67,28 +67,62 @@ GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEFAULT_STT_MODEL   = "whisper-large-v3-turbo"
 
 # Provider-aware speech-to-text.  Both endpoints are OpenAI-compatible
-# multipart /audio/transcriptions and return {"text": "..."}.  SiliconFlow
-# is listed first because it's the default chat provider in this build, so
-# "auto" lands there when its key is present.
-STT_PROVIDERS: Dict[str, Dict[str, str]] = {
+# multipart POSTs to /audio/transcriptions and return {"text": "..."}.
+#
+# IMPORTANT: SiliconFlow's SenseVoiceSmall endpoint accepts ONLY `file`
+# and `model` — sending Whisper-style extras (response_format, temperature,
+# language) makes it reject the request.  Groq's Whisper accepts the extras.
+# So each provider declares exactly which optional fields it tolerates.
+#
+# `url_setting` lets the host derive the endpoint from the operator's
+# WORKING chat base_url (api.siliconflow.com vs .cn differ by account/region),
+# so transcription rides the same host+key that chat already uses.  If the
+# host doesn't supply a base, we fall back to the hardcoded `url`.
+STT_PROVIDERS: Dict[str, Dict] = {
     "siliconflow": {
         "label":         "SiliconFlow (SenseVoiceSmall)",
         "url":           "https://api.siliconflow.com/v1/audio/transcriptions",
+        "base_setting":  "siliconflow_base_url",  # optional override
+        "provider_key":  "siliconflow",            # base_url comes from PROVIDERS
         "key_setting":   "siliconflow_api_key",
         "default_model": "FunAudioLLM/SenseVoiceSmall",
         "model_setting": "stt_model_siliconflow",
+        "extra_fields":  [],                       # file + model ONLY
     },
     "groq": {
         "label":         "Groq (Whisper)",
         "url":           GROQ_TRANSCRIBE_URL,
+        "provider_key":  "groq",
         "key_setting":   "groq_api_key",
         "default_model": DEFAULT_STT_MODEL,
         "model_setting": "stt_model",
+        "extra_fields":  ["response_format", "temperature", "language"],
     },
 }
 # Preference order when settings say "auto" and the active provider can't
 # transcribe: try these in turn, first one with a key wins.
 STT_AUTO_ORDER = ["siliconflow", "groq"]
+
+
+def _stt_url(cfg: Dict, settings: Dict) -> str:
+    """Resolve the transcription endpoint.  Prefer a base derived from the
+    operator's configured chat base_url for this provider (same host that
+    already works for chat), then append /audio/transcriptions.  Fall back
+    to the hardcoded url."""
+    # 1) explicit per-provider base override in settings, if any
+    base = ""
+    bset = cfg.get("base_setting")
+    if bset:
+        base = (settings.get(bset) or "").strip()
+    # 2) the provider's chat base_url (e.g. siliconflow_base_url style keys
+    #    that some builds store), else the hardcoded fallback url
+    if not base:
+        pk = cfg.get("provider_key")
+        if pk:
+            base = (settings.get(f"{pk}_base_url") or "").strip()
+    if base:
+        return base.rstrip("/") + "/audio/transcriptions"
+    return cfg["url"]
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -451,6 +485,22 @@ class SpeechToText:
                 pass
         self._wav = None
 
+    def test_capture(self, seconds: float = 4.0) -> Tuple[str, Optional[str]]:
+        """Record for a fixed duration then transcribe, returning
+        (text, error).  Used by the Settings 'Test microphone' button so the
+        operator sees the EXACT result or failure instead of guessing."""
+        if self.is_recording():
+            return "", "already recording — stop first"
+        if not self.start():
+            return "", "couldn't start the microphone (no recorder?)"
+        import time as _t
+        _t.sleep(max(1.0, min(float(seconds), 15.0)))
+        wav = self.stop()
+        if not wav:
+            return "", ("no audio captured — recorder produced an empty file. "
+                        "Check the default input source / mic permissions.")
+        return self.transcribe(wav)
+
     # ── transcription ──
     def transcribe(self, wav_path: str) -> Tuple[str, Optional[str]]:
         """Returns (text, error).  Blocks — call from a worker thread.
@@ -477,14 +527,23 @@ class SpeechToText:
         finally:
             self._safe_remove(wav_path)
 
-        fields = {"model": model, "response_format": "json",
-                  "temperature": "0"}
-        if lang:
+        # Only send fields THIS provider tolerates.  SenseVoice rejects the
+        # Whisper extras; Groq accepts them.  `file` + `model` always go.
+        allowed = set(cfg.get("extra_fields", []))
+        fields = {"model": model}
+        if "response_format" in allowed:
+            fields["response_format"] = "json"
+        if "temperature" in allowed:
+            fields["temperature"] = "0"
+        if "language" in allowed and lang:
             fields["language"] = lang
-        _log(f"transcribe via {provider_id} ({model})")
+
+        url = _stt_url(cfg, s)
+        _log(f"transcribe via {provider_id} ({model}) -> {url} "
+             f"[fields: {', '.join(sorted(fields))}]")
         try:
             raw = _post_multipart(
-                cfg["url"],
+                url,
                 {"Authorization": f"Bearer {key}"},
                 fields, "file", "audio.wav", audio, "audio/wav",
                 timeout=90)
@@ -498,6 +557,8 @@ class SpeechToText:
             hint = ""
             if e.code in (401, 403):
                 hint = f" — check your {provider_id} key in Settings"
+            elif e.code == 400:
+                hint = f" — {provider_id} rejected the request: {body[:120]}"
             return "", f"transcription failed (HTTP {e.code}){hint}"
         except Exception as e:
             _log(f"transcribe error ({provider_id}): {e}")
