@@ -66,6 +66,30 @@ def _log(msg: str) -> None:
 GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DEFAULT_STT_MODEL   = "whisper-large-v3-turbo"
 
+# Provider-aware speech-to-text.  Both endpoints are OpenAI-compatible
+# multipart /audio/transcriptions and return {"text": "..."}.  SiliconFlow
+# is listed first because it's the default chat provider in this build, so
+# "auto" lands there when its key is present.
+STT_PROVIDERS: Dict[str, Dict[str, str]] = {
+    "siliconflow": {
+        "label":         "SiliconFlow (SenseVoiceSmall)",
+        "url":           "https://api.siliconflow.com/v1/audio/transcriptions",
+        "key_setting":   "siliconflow_api_key",
+        "default_model": "FunAudioLLM/SenseVoiceSmall",
+        "model_setting": "stt_model_siliconflow",
+    },
+    "groq": {
+        "label":         "Groq (Whisper)",
+        "url":           GROQ_TRANSCRIBE_URL,
+        "key_setting":   "groq_api_key",
+        "default_model": DEFAULT_STT_MODEL,
+        "model_setting": "stt_model",
+    },
+}
+# Preference order when settings say "auto" and the active provider can't
+# transcribe: try these in turn, first one with a key wins.
+STT_AUTO_ORDER = ["siliconflow", "groq"]
+
 
 # ═════════════════════════════════════════════════════════════════════
 # TEXT CLEANING — strip the markup the model writes so the voice reads
@@ -303,16 +327,43 @@ class SpeechToText:
     def recorder_name(self) -> str:
         return self._recorder or "none"
 
+    def _pick_stt(self) -> Optional[Tuple[str, Dict[str, str]]]:
+        """Choose an STT provider: explicit setting wins, then the active
+        chat provider if it can transcribe, then auto-order by first key
+        present.  Returns (provider_id, config) or None if no key anywhere."""
+        s = self.get_settings()
+
+        def has_key(pid: str) -> bool:
+            cfg = STT_PROVIDERS.get(pid)
+            return bool(cfg and (s.get(cfg["key_setting"]) or "").strip())
+
+        choice = (s.get("stt_provider") or "auto").strip().lower()
+        if choice in STT_PROVIDERS and has_key(choice):
+            return choice, STT_PROVIDERS[choice]
+        if choice == "auto":
+            active = (s.get("active_provider") or "").strip().lower()
+            if active in STT_PROVIDERS and has_key(active):
+                return active, STT_PROVIDERS[active]
+            for pid in STT_AUTO_ORDER:
+                if has_key(pid):
+                    return pid, STT_PROVIDERS[pid]
+        # Explicit choice but no key for it → still try anything with a key
+        for pid in STT_AUTO_ORDER:
+            if has_key(pid):
+                return pid, STT_PROVIDERS[pid]
+        return None
+
     def has_key(self) -> bool:
-        return bool((self.get_settings().get("groq_api_key") or "").strip())
+        return self._pick_stt() is not None
 
     def unavailable_reason(self) -> Optional[str]:
         if not self._recorder:
             return ("No microphone recorder found.  Install pulseaudio-utils "
                     "(parecord) or alsa-utils (arecord).")
         if not self.has_key():
-            return ("No Groq API key — voice input transcribes through Groq.  "
-                    "Add a key in Settings → Backends.")
+            return ("No transcription key set.  Voice input needs a "
+                    "SiliconFlow or Groq key — add one in Settings → "
+                    "Backends.")
         return None
 
     # ── recording ──
@@ -402,13 +453,21 @@ class SpeechToText:
 
     # ── transcription ──
     def transcribe(self, wav_path: str) -> Tuple[str, Optional[str]]:
-        """Returns (text, error).  Blocks — call from a worker thread."""
+        """Returns (text, error).  Blocks — call from a worker thread.
+        Routes to whichever provider _pick_stt chooses (SiliconFlow's
+        SenseVoiceSmall or Groq's Whisper)."""
         s = self.get_settings()
-        key = (s.get("groq_api_key") or "").strip()
-        if not key:
+        picked = self._pick_stt()
+        if not picked:
             self._safe_remove(wav_path)
-            return "", "No Groq API key set (Settings → Backends)."
-        model = (s.get("stt_model") or DEFAULT_STT_MODEL).strip()
+            return "", ("No transcription key set — add a SiliconFlow or "
+                        "Groq key in Settings → Backends.")
+        provider_id, cfg = picked
+        key = (s.get(cfg["key_setting"]) or "").strip()
+        model_setting = cfg.get("model_setting")
+        model = ((s.get(model_setting) if model_setting else "") or "").strip()
+        if not model:
+            model = cfg["default_model"]
         lang = (s.get("stt_language") or "").strip()
         try:
             with open(wav_path, "rb") as f:
@@ -422,9 +481,10 @@ class SpeechToText:
                   "temperature": "0"}
         if lang:
             fields["language"] = lang
+        _log(f"transcribe via {provider_id} ({model})")
         try:
             raw = _post_multipart(
-                GROQ_TRANSCRIBE_URL,
+                cfg["url"],
                 {"Authorization": f"Bearer {key}"},
                 fields, "file", "audio.wav", audio, "audio/wav",
                 timeout=90)
@@ -434,14 +494,19 @@ class SpeechToText:
                 body = e.read().decode("utf-8", "replace")[:300]
             except Exception:
                 pass
-            _log(f"transcribe HTTP {e.code}: {body}")
-            return "", f"transcription failed (HTTP {e.code})"
+            _log(f"transcribe HTTP {e.code} ({provider_id}): {body}")
+            hint = ""
+            if e.code in (401, 403):
+                hint = f" — check your {provider_id} key in Settings"
+            return "", f"transcription failed (HTTP {e.code}){hint}"
         except Exception as e:
-            _log(f"transcribe error: {e}")
+            _log(f"transcribe error ({provider_id}): {e}")
             return "", f"transcription failed: {e}"
         try:
             data = json.loads(raw)
             text = (data.get("text") or "").strip()
+            # SenseVoice sometimes wraps output in <|tags|>; strip them.
+            text = re.sub(r"<\|[^|]*\|>", "", text).strip()
             return text, None
         except Exception as e:
             _log(f"transcribe parse error: {e}; raw={raw[:200]}")

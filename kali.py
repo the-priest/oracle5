@@ -61,7 +61,22 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "0.7.0"
+VERSION = "0.8.0"
+
+# ── Tool-chain efficiency knobs ──
+# How many model round-trips a single user turn may chain through.  With
+# read-only tools now batched (many lookups per round-trip), this budget
+# stretches much further than it looks.  On hitting it Kali doesn't dead-
+# end — it takes one final, tool-free turn to answer with what it gathered.
+MAX_TOOL_CHAIN = 12
+# Parallel workers when several read-only tools fire in one turn.
+TOOL_BATCH_MAX_WORKERS = 6
+# Keep this many most-recent tool_result blocks at full length in the
+# history resent to the model; older ones get trimmed to a stub (they've
+# already been consumed) so a long research chat doesn't re-bill huge
+# outputs every turn.
+HISTORY_KEEP_FULL_TOOL_RESULTS = 2
+HISTORY_TRIM_HEAD_CHARS = 600
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1824,8 +1839,9 @@ class SettingsDialog(Adw.PreferencesDialog):
         ig.set_title("Speak instead of type")
         if stt is not None and stt.recorder_available():
             ig.set_description(
-                f"Mic recorder: {stt.recorder_name()}.  Transcribed through "
-                "Groq Whisper (uses your Groq key).")
+                f"Mic recorder: {stt.recorder_name()}.  Transcribed by "
+                "SiliconFlow (SenseVoiceSmall) or Groq (Whisper) — whichever "
+                "key you have.")
         elif stt is not None:
             ig.set_description(
                 "No microphone recorder found.  Install pulseaudio-utils "
@@ -1844,8 +1860,28 @@ class SettingsDialog(Adw.PreferencesDialog):
                                                            r.get_active()))
         ig.add(self.autosend_row)
 
+        self.stt_provider_row = Adw.ComboRow()
+        self.stt_provider_row.set_title("Transcription provider")
+        self.stt_provider_row.set_subtitle(
+            "Auto uses your active chat provider when it can transcribe.")
+        self._stt_provider_keys = ["auto", "siliconflow", "groq"]
+        self.stt_provider_row.set_model(Gtk.StringList.new(
+            ["Auto", "SiliconFlow (SenseVoiceSmall)", "Groq (Whisper)"]))
+        cur_sp = (parent.settings.get("stt_provider") or "auto").lower()
+        if cur_sp in self._stt_provider_keys:
+            self.stt_provider_row.set_selected(
+                self._stt_provider_keys.index(cur_sp))
+        self.stt_provider_row.set_sensitive(
+            stt is not None and stt.recorder_available())
+        self.stt_provider_row.connect(
+            "notify::selected",
+            lambda r, *_: self._set(
+                "stt_provider",
+                self._stt_provider_keys[r.get_selected()]))
+        ig.add(self.stt_provider_row)
+
         self.stt_model_row = Adw.EntryRow()
-        self.stt_model_row.set_title("Whisper model")
+        self.stt_model_row.set_title("Groq Whisper model")
         self.stt_model_row.set_text(
             parent.settings.get("stt_model", "whisper-large-v3-turbo"))
         self.stt_model_row.set_show_apply_button(True)
@@ -2171,6 +2207,9 @@ class MainWindow(Adw.ApplicationWindow):
         # when the background work completes.
         self.streaming_chat_id: Optional[int] = None
         self._tool_chain_depth: int = 0
+        # Set once per turn when the tool-step budget is exhausted: the next
+        # turn ignores any tool calls and just answers, so we never dead-end.
+        self._tools_locked: bool = False
         # Set when the operator hits the stop button.  Halts the current
         # stream AND prevents the tool chain from kicking another turn.
         self._stop_requested: bool = False
@@ -2957,6 +2996,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.streaming_msg_db_id = None
         self.streaming_chat_id = None
         self._tool_chain_depth = 0
+        self._tools_locked = False
         self._turn_active = False
         self._set_working(False)
         self._set_send_mode(False)
@@ -3192,17 +3232,28 @@ class MainWindow(Adw.ApplicationWindow):
         if self.streaming_chat_id is None:
             self.streaming_chat_id = self.current_chat_id
             self._tool_chain_depth = 0
+            self._tools_locked = False
 
-        # Safety: limit how many tool calls can chain in a row to keep a
-        # buggy model from spinning forever.
+        # Limit how many model round-trips a turn may chain.  Rather than
+        # dead-ending with "chain too long" and no answer (annoying), once
+        # the budget is spent we lock tools and take ONE more turn to answer
+        # with whatever was gathered.  The directive below tells the model
+        # to stop calling tools; _after_stream ignores any it emits anyway.
         self._tool_chain_depth += 1
-        if self._tool_chain_depth > 8:
-            self._show_toast("Tool chain too long — stopping.")
-            self.streaming_chat_id = None
-            self._tool_chain_depth = 0
-            self._set_working(False)
-            self._set_send_mode(False)
-            return
+        if self._tool_chain_depth > MAX_TOOL_CHAIN and not self._tools_locked:
+            self._tools_locked = True
+            self.terminal_log("── tool budget reached; finalizing answer", "dim")
+            try:
+                fin_chat = self.streaming_chat_id or self.current_chat_id
+                self.store.add_message(
+                    fin_chat, "user",
+                    "<tool_result>\n[system note: tool-step budget reached. "
+                    "Do not call any more tools. Give your best final answer "
+                    "now using everything gathered so far.]\n</tool_result>",
+                    meta={"kind": "tool_result"})
+            except Exception:
+                pass
+            # fall through — this turn runs with tools locked.
 
         chat_id = self.streaming_chat_id
 
@@ -3335,19 +3386,37 @@ class MainWindow(Adw.ApplicationWindow):
         # `propose` is advisory — it renders a command card (already done by
         # finish_streaming → set_content) and must NOT execute.  Only the
         # sensing/run tools are executable here.
-        executable = [c for c in calls if c.name != "propose"]
-        # One command at a time: even if the model emitted several tool tags,
-        # only the first is ever acted on.  (The advisory card render path is
-        # clamped to one card too.)
-        if self.settings.get("one_command_at_a_time", True):
-            executable = executable[:1]
+        executable = [c for c in calls
+                      if c.name not in ("propose", "propose_edit", "write_file")]
+        # When the tool budget is spent we lock tools for the final answer
+        # turn — ignore anything the model still tried to call.
+        if self._tools_locked:
+            executable = []
         # Honour the agent-mode toggle and the stop button.  If the user
         # turned agent mode off or hit stop, don't execute even if the
         # model emitted a tool tag.
         if executable and not cancelled and self.current_agent_mode:
-            # Tool will fire — keep banner, change label to "running"
-            self._set_working(True, "running tool…")
-            self._execute_tool_calls(executable)
+            # EFFICIENCY: gather the leading run of read-only tools and run
+            # them together in ONE round-trip (parallel), instead of one
+            # model call per lookup.  Stop at the first side-effecting tool
+            # so anything with side effects still goes one-at-a-time through
+            # its own confirm gate next turn — the safety model is unchanged.
+            batch = []
+            for c in executable:
+                if self._pure_tool_fn(c) is not None:
+                    batch.append(c)
+                else:
+                    break
+            if len(batch) >= 2:
+                self._set_working(True, f"running {len(batch)} tools…")
+                self._execute_tool_batch(batch)
+            elif batch:
+                self._set_working(True, "running tool…")
+                self._execute_tool_calls(batch)
+            else:
+                # First executable tool has side effects → one at a time.
+                self._set_working(True, "running tool…")
+                self._execute_tool_calls(executable[:1])
         else:
             # Turn has fully settled (no tool chaining).  Record it for
             # persistent memory in the background — no-op unless memory is on.
@@ -3396,6 +3465,120 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     # ── tool execution ──────────────────────────────────────────
+
+    def _pure_tool_fn(self, call):
+        """Return a zero-arg callable that produces a result dict for a
+        read-only, side-effect-free tool that's safe to run in parallel and
+        batch — or None if this tool must take the normal (gated / specially
+        rendered) single path.  This is the allow-list that decides what can
+        be bundled into one round-trip."""
+        n = call.name
+        a = call.args or {}
+
+        def i(v, d):
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return d
+
+        # Web / GitHub research — the tools most likely to chain.
+        if n == "web_search":
+            return lambda: tool_web_search(
+                a.get("query", a.get("q", "")), i(a.get("max_results", 6), 6))
+        if n == "web_read":
+            return lambda: tool_web_read(
+                a.get("url", ""), i(a.get("max_chars", 6000), 6000))
+        if n == "github":
+            return lambda: tool_github(
+                a.get("action", ""), a.get("query", ""), a.get("repo", ""),
+                a.get("user", ""), a.get("path", ""),
+                a.get("ref", a.get("branch", "")), i(a.get("limit", 10), 10))
+        # Pure system / desktop sensing (independent subprocesses).
+        if n == "system_info":
+            return tool_system_info
+        if n == "disk_usage":
+            return tool_disk_usage
+        if n == "processes":
+            return lambda: tool_processes(i(a.get("top_n", 15), 15))
+        if n == "network_status":
+            return tool_network_status
+        if n == "recent_downloads":
+            return lambda: tool_recent_downloads(i(a.get("limit", 20), 20))
+        if n == "service_status":
+            return lambda: tool_service_status(a.get("name"))
+        if n == "journal_tail":
+            return lambda: tool_journal_tail(
+                i(a.get("lines", 50), 50), a.get("unit"))
+        if n == "desktop_info":
+            return tool_desktop_info
+        if n == "list_apps":
+            return lambda: tool_list_apps(
+                a.get("filter", a.get("filter_text", "")))
+        if n == "list_windows":
+            return tool_list_windows
+        if n == "list_dir":
+            return lambda: tool_list_dir(a.get("path", "."))
+        if n == "find_file":
+            return lambda: tool_find_file(
+                a.get("pattern", "*"), a.get("search_path", "~"))
+        if n == "path_info":
+            return lambda: tool_path_info(a.get("path", ""))
+        if n == "read_file":
+            p = a.get("path", "")
+            # Sensitive reads keep their confirm gate — never auto-batched.
+            if p and not is_sensitive_path(p):
+                return lambda: tool_read_file(p)
+            return None
+        return None
+
+    def _execute_tool_batch(self, calls):
+        """Run several read-only tools concurrently and feed ONE combined
+        tool_result back.  A multi-lookup turn then costs a single model
+        round-trip (and a single chain step) instead of one per tool."""
+        chat_id = self.streaming_chat_id or self.current_chat_id
+        for c in calls:
+            self.store.add_message(
+                chat_id, "tool",
+                f"⚙ tool: {c.name}({json.dumps(c.args)})",
+                meta={"kind": "call"})
+        names = ", ".join(c.name for c in calls)
+        self.terminal_log(f"→ batch: {names} ({len(calls)} in parallel)", "info")
+
+        def _bg():
+            import concurrent.futures
+            results: list = [None] * len(calls)
+
+            def run_one(pair):
+                idx, c = pair
+                fn = self._pure_tool_fn(c)
+                try:
+                    res = fn()
+                    txt = json.dumps(res, indent=2, default=str)
+                except Exception as e:
+                    txt = f"error: {type(e).__name__}: {str(e)[:200]}"
+                return idx, c.name, txt
+
+            workers = max(1, min(TOOL_BATCH_MAX_WORKERS, len(calls)))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=workers) as ex:
+                    for idx, name, txt in ex.map(
+                            run_one, list(enumerate(calls))):
+                        results[idx] = (name, txt)
+            except Exception as e:
+                GLib.idle_add(self._feed_tool_result,
+                              f"batch error: {e}")
+                return
+
+            blocks = []
+            for n, (name, txt) in enumerate(results, 1):
+                blocks.append(f"[tool {n}/{len(results)}: {name}]\n{txt}")
+            combined = "\n\n".join(blocks)
+            GLib.idle_add(lambda: self.terminal_log(
+                f"✓ batch done ({len(calls)} tools)", "ok") or False)
+            GLib.idle_add(self._feed_tool_result, combined)
+
+        threading.Thread(target=_bg, daemon=True).start()
 
     def _execute_tool_calls(self, calls):
         call = calls[0]
@@ -4094,13 +4277,32 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ── history ─────────────────────────────────────────────────
 
+    def _trim_tool_result(self, content: str) -> str:
+        """Shrink an older, already-consumed tool_result so a long research
+        chat doesn't re-bill the full (sometimes huge) output every turn."""
+        if len(content) <= HISTORY_TRIM_HEAD_CHARS + 200:
+            return content
+        head = content[:HISTORY_TRIM_HEAD_CHARS]
+        return (head + f"\n…[earlier tool output trimmed to save tokens — "
+                f"{len(content)} chars originally]\n</tool_result>")
+
     def _build_history_for_model(self, chat_id: Optional[int] = None):
         out = []
         msgs = self.store.list_messages(chat_id or self.current_chat_id)
-        for m in msgs:
+        # Keep only the most recent few tool_result blocks at full length;
+        # trim older ones (they've already been read and acted on).
+        tr_idx = [i for i, m in enumerate(msgs)
+                  if m.role == "user"
+                  and (m.meta or {}).get("kind") == "tool_result"]
+        keep_full = set(tr_idx[-HISTORY_KEEP_FULL_TOOL_RESULTS:]) \
+            if HISTORY_KEEP_FULL_TOOL_RESULTS > 0 else set()
+        for i, m in enumerate(msgs):
             kind = (m.meta or {}).get("kind")
             if m.role == "user":
-                out.append({"role": "user", "content": m.content})
+                content = m.content
+                if kind == "tool_result" and i not in keep_full:
+                    content = self._trim_tool_result(content)
+                out.append({"role": "user", "content": content})
             elif m.role == "assistant":
                 out.append({"role": "assistant", "content": m.content})
             elif m.role == "tool":

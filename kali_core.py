@@ -269,6 +269,11 @@ DEFAULT_SETTINGS = {
     "voice_autosend":   True,           # auto-send after a voice message transcribes
     "stt_model":        "whisper-large-v3-turbo",
     "stt_language":     "",             # ISO-639-1 hint (blank = auto-detect)
+    # Which cloud transcribes voice input.  "auto" = use your active chat
+    # provider if it supports speech (SiliconFlow→SenseVoiceSmall,
+    # Groq→Whisper), else fall back to whichever key you have set.
+    "stt_provider":     "auto",         # auto | siliconflow | groq
+    "stt_model_siliconflow": "",         # blank = FunAudioLLM/SenseVoiceSmall
 
     # ── Chat history / retention ──
     # Ephemeral by default: start fresh each launch, roll off stale chats,
