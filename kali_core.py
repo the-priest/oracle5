@@ -227,7 +227,11 @@ DEFAULT_SETTINGS = {
     # Behaviour
     "system_prompt": "",
     "agent_mode_default": True,        # Kali defaults to agent on
-    "confirm_all_commands": True,
+    # Off by default: a command Kali decides to run executes without a card
+    # click.  The hard catastrophic-command backstop (is_catastrophic_command)
+    # still forces an explicit confirm for system-destroying commands even
+    # when this is off, so "no friction" never means "no floor".
+    "confirm_all_commands": False,
 
     # Watcher
     "watcher_enabled": False,
@@ -1384,6 +1388,56 @@ def command_needs_sudo(command: str) -> bool:
     if not command:
         return False
     return bool(_SUDO_RE.search(command))
+
+
+# ── Catastrophic-command backstop ────────────────────────────────────
+# These patterns describe commands that destroy a system or its storage
+# irreversibly and are essentially NEVER something to run unattended — a
+# wiped disk, a nuked filesystem, a fork bomb.  The auto-run path consults
+# this and ALWAYS forces an explicit confirm for a match, regardless of the
+# "confirm every command" setting.  It exists for exactly one reason: a
+# model is not perfect and it ingests untrusted text (web pages, scan
+# output) that can try to steer it, so the one class of mistake that can't
+# be undone keeps a human in the loop.  It is intentionally narrow — normal
+# offensive-security work (nmap, nuclei, sqlmap, hydra, file ops in your own
+# dirs) does not match — so it doesn't add friction to real work.
+_CATASTROPHIC_PATTERNS = [
+    # recursive delete whose target is the filesystem root or bare $HOME
+    # (but NOT a subdirectory like ~/engagements/old — that's normal work)
+    r'\brm\b[^\n|;&]*?\s-[a-z]*r[a-z]*\s+(?:-{1,2}[a-z-]+\s+)*(?:/|/\*|~|~/|~/\*|\$\{?HOME\}?)(?=\s|$|\*|;)',
+    # recursive delete of a top-level system directory
+    r'\brm\b[^\n|;&]*?\s-[a-z]*r[a-z]*\s+(?:-{1,2}[a-z-]+\s+)*/(?:bin|boot|dev|etc|lib\w*|proc|root|sbin|srv|sys|usr|var)(?:/\S*)?(?=\s|$|;)',
+    # writing straight to a block device (dd / redirection / tee)
+    r'\bdd\b[^\n]*\bof=\s*/dev/(?:sd|nvme|mmcblk|vd|hd|loop|disk)',
+    r'(?:^|[\s|>])>\s*/dev/(?:sd|nvme|mmcblk|vd|hd)',
+    r'\btee\b[^\n]*\s/dev/(?:sd|nvme|mmcblk|vd|hd)',
+    # filesystem / partition destroyers
+    r'\bmkfs(?:\.\w+)?\b',
+    r'\bwipefs\b',
+    r'\bshred\b[^\n]*\s/dev/',
+    r'\bblkdiscard\b',
+    r'\b(?:sg|hd)parm\b[^\n]*--(?:security-erase|trim-sector-ranges)',
+    r'\b(?:parted|sfdisk|sgdisk)\b[^\n]*(?:--zap-all|mklabel|-Z|--delete)',
+    # fork bomb
+    r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:',
+    # recursive permission/ownership nuke on a system root
+    r'\bchmod\b[^\n]*\s-[a-z]*R[a-z]*\s+[0-7]{3,4}\s+/(?:\s|$|bin|etc|usr|lib|boot|var)',
+    r'\bchown\b[^\n]*\s-[a-z]*R[a-z]*\s+\S+\s+/(?:\s|$|bin|etc|usr|lib|boot)',
+    # overwrite-everything cipher / crypto-shred of a mount
+    r'\bcryptsetup\b[^\n]*\b(?:erase|luksErase)\b',
+]
+_CATASTROPHIC_RE = re.compile("|".join(_CATASTROPHIC_PATTERNS), re.IGNORECASE)
+
+
+def is_catastrophic_command(command: str) -> bool:
+    """True if a command looks like it would irreversibly destroy the system
+    or its storage (disk wipe, filesystem nuke, recursive root delete, fork
+    bomb).  Used as a hard confirm-always backstop on the auto-run path — it
+    can lower trust but is never bypassed by a setting.  Deliberately narrow:
+    ordinary pentest and file work does not trip it."""
+    if not command:
+        return False
+    return bool(_CATASTROPHIC_RE.search(command))
 
 
 # Same matcher, but capturing the leading boundary so we can inject an

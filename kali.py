@@ -49,7 +49,8 @@ from kali_core import (
     note_command, recent_duplicate,
     parse_tool_calls, strip_tool_calls,
     extract_think_blocks, strip_think_blocks,
-    is_online, is_sensitive_path, command_needs_sudo, Watcher,
+    is_online, is_sensitive_path, command_needs_sudo, is_catastrophic_command,
+    Watcher,
     PROVIDERS, PROVIDERS_BY_KEY,
 )
 from kali_persona import (
@@ -69,7 +70,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "2.1.3"
+VERSION = "2.2.0"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -783,6 +784,171 @@ link, button.link, *:link { color: #4a9eff; }
 .msg-speak-btn.speaking {
     color: #4a9eff;
     background-color: rgba(54, 123, 240, 0.15);
+}
+
+/* =====================================================================
+   POLISH LAYER  --  product-grade finish.  Appended last so it refines
+   the base theme above (later rules win): real depth, smooth state
+   transitions, tactile buttons, premium surfaces.  Tuned to read like a
+   shipped commercial tool, not a script with a window.
+   ===================================================================== */
+
+/* Motion: subtle, fast, everywhere it counts. */
+button, .quick-chip, .chat-row, entry, .mic-button, switch, row,
+.cmd-run-btn, .cmd-copy-btn, .terminal-toggle-btn {
+    transition: background-color 130ms ease,
+                border-color 130ms ease,
+                box-shadow 160ms ease,
+                color 130ms ease;
+}
+
+/* Header: lift it off the content with a hairline + soft shadow. */
+headerbar {
+    box-shadow: 0 1px 0 rgba(255,255,255,0.02),
+                0 2px 8px rgba(0,0,0,0.35);
+}
+
+/* ---- Buttons: depth, gradient sheen, a real pressed state ---- */
+button {
+    background-image: linear-gradient(180deg,
+                      rgba(255,255,255,0.03), rgba(255,255,255,0.0));
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25),
+                inset 0 1px 0 rgba(255,255,255,0.03);
+    padding: 8px 16px;
+    font-weight: 500;
+}
+button:hover {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.30),
+                inset 0 1px 0 rgba(255,255,255,0.05);
+}
+button:active {
+    background-image: none;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.40);
+}
+button:disabled {
+    box-shadow: none;
+    background-image: none;
+    opacity: 0.55;
+}
+button:focus-visible {
+    outline: 2px solid rgba(74,158,255,0.65);
+    outline-offset: 1px;
+}
+button.suggested-action {
+    box-shadow: 0 2px 8px rgba(54,123,240,0.35),
+                inset 0 1px 0 rgba(255,255,255,0.15);
+}
+button.suggested-action:hover {
+    box-shadow: 0 3px 14px rgba(74,158,255,0.45),
+                inset 0 1px 0 rgba(255,255,255,0.20);
+}
+
+/* ---- Primary action buttons (Run / Apply) ---- */
+.cmd-run-btn {
+    box-shadow: 0 2px 10px rgba(54,123,240,0.40),
+                inset 0 1px 0 rgba(255,255,255,0.18);
+    padding: 11px 26px;
+    letter-spacing: 0.2px;
+}
+.cmd-run-btn:hover {
+    box-shadow: 0 4px 16px rgba(74,158,255,0.50),
+                inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.cmd-run-btn:active {
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.35);
+}
+.cmd-copy-btn { padding: 11px 20px; }
+
+/* ---- Command / edit cards: lift them onto a surface ---- */
+.cmd-card {
+    background-image: linear-gradient(180deg, #161a20, #121519);
+    box-shadow: 0 4px 18px rgba(0,0,0,0.40),
+                inset 0 1px 0 rgba(255,255,255,0.03);
+    border: 1px solid #2b313b;
+    padding: 16px 18px;
+}
+.cmd-card-title { letter-spacing: 0.4px; }
+.risk-badge {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.30);
+    letter-spacing: 0.3px;
+    font-weight: 700;
+}
+
+/* ---- Composer entry: inset depth + a focus glow ---- */
+entry {
+    background-image: linear-gradient(180deg,
+                      rgba(0,0,0,0.18), rgba(0,0,0,0.0));
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.35);
+}
+entry:focus-within {
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.35),
+                0 0 0 3px rgba(54,123,240,0.22);
+}
+
+/* ---- Message bubbles: quiet depth so they sit above the canvas ---- */
+.msg-user {
+    box-shadow: 0 2px 10px rgba(54,123,240,0.18);
+}
+.msg-assistant {
+    box-shadow: 0 2px 10px rgba(0,0,0,0.28);
+}
+
+/* ---- Sidebar chat rows: accent bar on the active one ---- */
+.chat-row {
+    border-left: 3px solid transparent;
+}
+.chat-row.selected, .chat-row:selected {
+    border-left: 3px solid #4a9eff;
+    background-image: linear-gradient(90deg,
+                      rgba(54,123,240,0.16), rgba(54,123,240,0.0));
+}
+
+/* ---- Quick chips: pill polish ---- */
+.quick-chip {
+    background-image: linear-gradient(180deg,
+                      rgba(255,255,255,0.03), rgba(255,255,255,0.0));
+    box-shadow: 0 1px 2px rgba(0,0,0,0.20);
+    padding: 7px 15px;
+}
+.quick-chip:hover {
+    box-shadow: 0 2px 8px rgba(54,123,240,0.25);
+}
+
+/* ---- Mic recording: gentle pulse-ready glow already set; deepen it ---- */
+.mic-recording {
+    box-shadow: 0 0 0 3px rgba(229,72,77,0.25),
+                0 0 14px rgba(229,72,77,0.55);
+}
+
+/* ---- Working row: a soft active surface ---- */
+.working-row {
+    background-image: linear-gradient(90deg,
+                      rgba(54,123,240,0.10), rgba(54,123,240,0.0));
+    box-shadow: inset 0 0 0 1px rgba(54,123,240,0.15);
+}
+
+/* ---- Slim, themed scrollbars ---- */
+scrollbar { background-color: transparent; border: none; }
+scrollbar slider {
+    background-color: #2b313b;
+    border-radius: 10px;
+    min-width: 7px;
+    min-height: 7px;
+}
+scrollbar slider:hover { background-color: #3a4250; }
+scrollbar slider:active { background-color: #4a9eff; }
+
+/* ---- Boxed settings lists: a touch of depth ---- */
+list.boxed-list {
+    box-shadow: 0 2px 12px rgba(0,0,0,0.30);
+}
+
+/* ---- Auto-run note: when Kali runs a command without a card ---- */
+.autorun-note {
+    color: #6f7a88;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', monospace;
+    margin: 2px 0 6px 0;
 }
 """
 
@@ -1629,20 +1795,35 @@ class ChatRow(Gtk.ListBoxRow):
 # ═════════════════════════════════════════════════════════════════════
 
 def confirm_command_dialog(parent: Gtk.Window, command: str, reason: str,
-                            on_decision: Callable[[bool, Optional[str]], None]):
+                            on_decision: Callable[[bool, Optional[str]], None],
+                            catastrophic: bool = False):
     """Confirm a shell command.  If it needs sudo, show an inline
     password field so the operator can authenticate in one step.
 
     on_decision(allow: bool, password: Optional[str]) — password is the
     typed sudo password when the command needs sudo and the operator
     approved; otherwise None.
+
+    catastrophic=True is the auto-run backstop: the command matched a
+    system-destroying pattern (disk wipe, fs nuke, recursive root delete).
+    The dialog shouts, defaults to Cancel, and is shown even in auto-run
+    mode so an irreversible mistake always stops for a human.
     """
     needs_sudo = command_needs_sudo(command)
-    subtitle = (f"{reason}\n\nRuns as your user.  Output goes back to Kali."
-                if not needs_sudo else
-                f"{reason}\n\nThis needs root.  Enter your sudo password to "
-                f"let it through — Kali never stores or sees it.")
-    dlg = Adw.AlertDialog.new("Run shell command?", subtitle)
+    if catastrophic:
+        title = "⚠ DESTRUCTIVE COMMAND — confirm to run"
+        subtitle = ("This command can irreversibly destroy data or this "
+                    "system (disk/filesystem wipe, recursive delete of a "
+                    "system path, or similar). It will NOT auto-run. Only "
+                    "continue if you typed it or fully understand it.\n\n"
+                    f"{reason}")
+    else:
+        title = "Run shell command?"
+        subtitle = (f"{reason}\n\nRuns as your user.  Output goes back to Kali."
+                    if not needs_sudo else
+                    f"{reason}\n\nThis needs root.  Enter your sudo password to "
+                    f"let it through — Kali never stores or sees it.")
+    dlg = Adw.AlertDialog.new(title, subtitle)
     body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     cmd_lbl = Gtk.Label(label=command, xalign=0.0)
     cmd_lbl.set_wrap(True)
@@ -1661,9 +1842,16 @@ def confirm_command_dialog(parent: Gtk.Window, command: str, reason: str,
 
     dlg.set_extra_child(body)
     dlg.add_response("cancel", "Cancel")
-    dlg.add_response("run", "Run" if not needs_sudo else "Authenticate & run")
-    dlg.set_response_appearance("run", Adw.ResponseAppearance.SUGGESTED)
-    dlg.set_default_response("run")
+    run_label = ("Run anyway" if catastrophic
+                 else "Run" if not needs_sudo else "Authenticate & run")
+    dlg.add_response("run", run_label)
+    if catastrophic:
+        # Red button, and default to Cancel so a reflexive Enter is safe.
+        dlg.set_response_appearance("run", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+    else:
+        dlg.set_response_appearance("run", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("run")
     dlg.set_close_response("cancel")
 
     def _cb(_dlg, response):
@@ -1673,7 +1861,8 @@ def confirm_command_dialog(parent: Gtk.Window, command: str, reason: str,
     dlg.connect("response", _cb)
 
     # Pressing Enter in the password field activates the run response.
-    if pw_entry is not None:
+    # (Not for catastrophic commands — there the default is Cancel.)
+    if pw_entry is not None and not catastrophic:
         pw_entry.connect("activate", lambda *_: dlg.response("run"))
 
     dlg.present(parent)
@@ -1866,7 +2055,8 @@ class SettingsDialog(Adw.PreferencesDialog):
         self.confirm_all_row = Adw.SwitchRow()
         self.confirm_all_row.set_title("Confirm every command")
         self.confirm_all_row.set_subtitle(
-            "Off = only risky commands prompt.")
+            "Off (default): Kali runs commands without a click. "
+            "System-destroying commands always prompt regardless.")
         self.confirm_all_row.set_active(parent.settings["confirm_all_commands"])
         self.confirm_all_row.connect("notify::active", self._on_confirm_all)
         bg.add(self.confirm_all_row)
@@ -4787,10 +4977,19 @@ class MainWindow(Adw.ApplicationWindow):
         have_cached_sudo = (sudo_needed
                             and self.settings.get("auto_sudo_when_cached", True)
                             and sudo_cached())
-        need_approval = (self.settings.get("confirm_all_commands", True)
-                         and not from_card)
+        # Hard backstop: a system-destroying command (disk/fs wipe, recursive
+        # root delete, fork bomb…) ALWAYS stops for an explicit confirm — even
+        # in auto-run mode, even from a card.  This is the one gate a setting
+        # can't switch off, because it's the one mistake that can't be undone.
+        catastrophic = is_catastrophic_command(command)
+        if catastrophic:
+            self.terminal_log("⚠ destructive command — forcing confirm", "error")
+        need_approval = (catastrophic
+                         or (self.settings.get("confirm_all_commands", True)
+                             and not from_card))
         if need_approval or (sudo_needed and not have_cached_sudo):
-            confirm_command_dialog(self, command, reason or "no reason", decide)
+            confirm_command_dialog(self, command, reason or "no reason", decide,
+                                   catastrophic=catastrophic)
         else:
             if have_cached_sudo:
                 self.terminal_log("• using cached sudo credential", "dim")
