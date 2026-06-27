@@ -4632,7 +4632,15 @@ def format_scan_for_chat(scan: Dict[str, Any]) -> str:
 # and a missing closing tag (self-close or model dropped it).
 TOOL_TAG_RE = re.compile(
     r'<tool'
-    r'((?:\s+[a-zA-Z_]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[\u201c\u201d][^\u201c\u201d]*[\u201c\u201d]))*)'  # attrs
+    # Attribute blob.  Each whitespace-separated token is EITHER a proper
+    # key="value" pair OR a bare word — the latter tolerates the quirk where
+    # a model emits `<tool tool name="run">` (a stray duplicate "tool") or
+    # `<tool run>`.  Without the bare-word alternative the whole tag fails to
+    # match, so it neither executes NOR gets stripped and leaks into the chat
+    # as raw text.  name="..."/json=... are still pulled out of this blob by
+    # the dedicated regexes below, so a stray word changes nothing else.
+    r'((?:\s+(?:[a-zA-Z_]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[\u201c\u201d][^\u201c\u201d]*[\u201c\u201d])'
+    r'|[^\s=>"\']+))*)'  # attrs (key="value" pairs and/or bare words)
     r'\s*(?:/\s*>|>(.*?)(?:<\\?\s*/\s*tool\s*>|$))',
     re.DOTALL | re.IGNORECASE)
 
@@ -4837,6 +4845,19 @@ def strip_tool_calls(text: str) -> str:
     out = TOOL_TAG_RE.sub("", text)
     # Also remove dangling unclosed <tool ...> ... fragments mid-stream
     out = TOOL_PARTIAL_RE.sub("", out)
+    # LAST-RESORT belt-and-suspenders.  The parser above is liberal, but a
+    # model can always invent a tag shape we didn't anticipate.  The execution
+    # side can't run a tag it couldn't parse — but the one thing that must
+    # NEVER happen is a raw <tool …> tag being shown to the operator as chat
+    # text (the bug that made Kali look like it was "typing" commands instead
+    # of running them).  So whatever shape slipped through, scrub any residual
+    # <tool …>…</tool> block and any leftover bare <tool …> opener from the
+    # DISPLAY string.  This only affects what's rendered, never what executed.
+    if re.search(r'<\s*\\?\s*/?\s*tool\b', out, re.IGNORECASE):
+        out = re.sub(r'<tool\b[^>]*>.*?<\\?\s*/\s*tool\s*>', '', out,
+                     flags=re.DOTALL | re.IGNORECASE)
+        # any leftover opener or orphaned closer remnant
+        out = re.sub(r'<\\?\s*/?\s*tool\b[^>]*>?', '', out, flags=re.IGNORECASE)
     return out.strip()
 
 

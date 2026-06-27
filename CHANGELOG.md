@@ -3,6 +3,19 @@
 ## v3.1.0 — Structural safety floor + honest docs
 
 ### Tool correctness (runtime bugs found by executing the logic)
+- **Tool calls with a stray duplicate word now parse instead of leaking into
+  the chat — fixed in two layers.** Some models emit `<tool tool name="run">…`
+  (a doubled "tool") or `<tool run>`. *(1) Execution:* the tag regex only
+  accepted `key="value"` attribute pairs, so a bare word made the whole tag
+  fail to match — it never ran AND never got stripped, so raw `<tool …>` text
+  printed in chat and the command silently did nothing. The parser now
+  tolerates stray bare words (`name=`/`json=` still extracted normally). *(2)
+  Display safety net:* `strip_tool_calls` now has a last-resort scrub so that
+  *any* residual tool-shaped text — even a shape too malformed to parse — is
+  removed from what's shown to the operator. The execution path can't run a tag
+  it couldn't parse, but the worst case is now "silently hidden", never "typed
+  into the conversation". Pinned by `TestToolTagParsing` (incl. a no-leak test
+  over malformed shapes).
 - **`parse_output` now strips ANSI colour codes first.** Many recon tools
   (httpx, nuclei, ffuf, feroxbuster, naabu, gobuster…) colourise by default, so
   a paste straight from the terminal arrived full of `\x1b[…m` codes. The

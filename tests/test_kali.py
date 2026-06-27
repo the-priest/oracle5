@@ -614,5 +614,64 @@ class TestSafetyFloor(unittest.TestCase):
         self.assertTrue(self.S.is_catastrophic_command('rm -rf / "'))
 
 
+class TestToolTagParsing(unittest.TestCase):
+    """The model's tool calls must be parsed AND stripped from the visible
+    chat.  A tag that fails to match does neither — it silently never runs and
+    leaks into the conversation as raw `<tool …>` text.  The most common cause
+    seen in the wild is a stray duplicate word: `<tool tool name="run">`."""
+
+    def _one(self, text):
+        calls = kali_core.parse_tool_calls(text)
+        stripped = kali_core.strip_tool_calls(text)
+        return calls, stripped
+
+    def test_doubled_tool_word_still_parses_and_strips(self):
+        # The exact malformed shape from a real DeepSeek session.
+        text = ('<tool tool name="run">{"command": "ip -4 addr show usb0", '
+                '"reason": "check ip"}</tool>')
+        calls, stripped = self._one(text)
+        self.assertEqual(len(calls), 1, "doubled-tool tag failed to parse")
+        self.assertEqual(calls[0].name, "run")
+        self.assertEqual(calls[0].args.get("command"), "ip -4 addr show usb0")
+        self.assertNotIn("<tool", stripped,
+                         "malformed tag leaked into the visible chat")
+
+    def test_normal_tag_unaffected(self):
+        calls, stripped = self._one('<tool name="run">{"command": "whoami"}</tool>')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].name, "run")
+        self.assertEqual(calls[0].args.get("command"), "whoami")
+        self.assertNotIn("<tool", stripped)
+
+    def test_bare_name_word_defaults_to_run(self):
+        # `<tool run>` with the command in the body — no name="" attribute.
+        calls, _ = self._one('<tool run>{"command": "id"}</tool>')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].name, "run")
+
+    def test_self_closing_and_empty_body(self):
+        c1, _ = self._one('<tool name="quick_facts" />')
+        c2, _ = self._one('<tool name="system_info">{}</tool>')
+        self.assertEqual(c1[0].name, "quick_facts")
+        self.assertEqual(c2[0].name, "system_info")
+
+    def test_no_tool_shaped_text_ever_reaches_the_chat(self):
+        # Belt-and-suspenders: whatever shape a tag arrives in — even one too
+        # malformed to parse/execute — it must never be DISPLAYED as raw text.
+        # The worst case is "hidden", never "typed at the operator".
+        samples = [
+            '<tool name="run">{"command": "whoami"}</tool>',     # normal
+            '<tool tool name="run">{"command": "id"}</tool>',    # doubled word
+            '<tool ??? <<>> name=run >{busted json</tool>',      # unparseable
+            'before <tool name="run">{"command":"x"',            # orphaned opener
+            'stray </tool> closer',                              # orphaned closer
+        ]
+        for s in samples:
+            stripped = kali_core.strip_tool_calls(s)
+            self.assertNotRegex(
+                stripped, r'(?i)<\s*\\?\s*/?\s*tool\b',
+                f"tool-shaped text leaked to chat from: {s!r}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
