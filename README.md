@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/the-priest/oracle5/main/install.sh 
 *Drives your desktop · runs your shell (only with your OK) · audits & pentests · reads your files · searches & verifies the web · writes and tests its own tools · talks and listens.*
 
 **Multi-provider cloud AI** — SiliconFlow · Groq · Novita · GitHub Models · Google AI Studio
-**`v2.1.3`** · GTK4 + libadwaita · X11 & Wayland · desktop + NetHunter mobile
+**`v2.3.0`** · GTK4 + libadwaita · X11 & Wayland · desktop + NetHunter mobile
 
 </div>
 
@@ -82,7 +82,7 @@ A complete map. Read-only **sensing** runs freely, no permission needed. Anythin
 - **`scan_net`** — network discovery on your own segment.
 - **`tooling_check`** — inventories **59** offensive tools across recon, probing, port scanning, fuzzing, vuln scanning, secrets, creds and AD; gives the exact install line (apt/go/pipx), known aliases (`nxc`→`netexec`), and freshness nudges (nuclei templates, SecLists/rockyou).
 - **`pentest_plan`** — builds an **ordered recon plan** (passive/enumeration first) with profiles `web · network · ad · api · full · quick` and an **intensity** knob (`stealth/normal/aggressive`) that tunes nmap timing, nuclei rate-limits and ffuf threads. Every step is a *proposed* command behind the Run gate — nothing fires on its own.
-- **`parse_output`** — turns raw scanner stdout into clean structured data (hosts, ports, services, versions, endpoints, findings) for **20+ tools**: nmap (incl. NSE hits), httpx, nuclei, naabu, masscan, subfinder, ffuf, feroxbuster, gobuster, katana, whatweb, wpscan, sslscan/testssl, smbmap, netexec, nikto, gitleaks, dalfox, arjun, and more.
+- **`parse_output`** — turns raw scanner stdout into clean structured data (hosts, ports, services, versions, endpoints, findings) for **20+ tools**: nmap (incl. NSE hits), httpx, nuclei, naabu, masscan, subfinder, ffuf, feroxbuster, gobuster, katana, whatweb, wpscan, sslscan/testssl, smbmap, netexec, nikto, gitleaks, dalfox, arjun, and more. With `enrich_cves`, it **auto-chains into CVE intel** — every confirmed service+version in the scan is looked up (NVD + CISA KEV + EPSS) and a severity-ranked `cve_enrichment` block is attached, so one call turns a scan paste into "here are the services *and* the exploitable, known-in-the-wild CVEs."
 - **`cve_lookup`** — pulls CVEs from **NVD**, then enriches each with **CISA KEV** (exploited in the wild?) and **EPSS** (exploit probability), and re-ranks **KEV → EPSS → CVSS** so the genuinely dangerous ones surface first.
 - **`methodology`** — phased testing checklists grounded in **PTES / OWASP WSTG / the AD kill-chain** (web, network, ad, api, mobile, wifi, recon, priv-esc, cloud).
 - **`wordlist_find`** — locates the wordlists actually installed on your box (SecLists included), with the canonical pick per task.

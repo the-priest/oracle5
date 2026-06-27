@@ -3340,22 +3340,40 @@ def tool_cve_lookup(product: str, version: str = "",
         return {"ok": False, "error": f"cve_lookup failed: {e}"}
 
 
-def tool_parse_output(tool: str, raw: str) -> Dict[str, Any]:
+def tool_parse_output(tool: str, raw: str,
+                      enrich_cves: bool = False) -> Dict[str, Any]:
     """Turn raw scanner output into clean structured data.  Feed it the tool
     name (nmap, httpx, nuclei, naabu, masscan, subfinder, ffuf, feroxbuster,
     gobuster, katana, gau, whatweb, wpscan, sslscan, testssl, smbmap, netexec,
     nikto, gitleaks, trufflehog, dalfox, arjun, …) and the stdout you captured,
     and it returns a normalised list of hosts / ports / endpoints / findings.
-    Read-only — pure text parsing, runs nothing."""
+
+    Set enrich_cves=true to AUTO-CHAIN into CVE intel: every confirmed
+    product+version in the output (e.g. an nmap banner like 'OpenSSH 9.6') is
+    looked up via NVD + CISA KEV + EPSS and a consolidated, severity-ranked
+    'cve_enrichment' block is attached — so a scan paste comes back already
+    telling you which services have exploitable, known-in-the-wild CVEs.
+    (That one path touches the network; plain parsing is read-only/offline.)"""
     try:
         from kali_ext import pentest as _pentest
     except Exception as e:
         return {"ok": False, "error": f"pentest module unavailable: {e}"}
     try:
-        return _pentest.parse_output((tool or "").strip().lower(),
-                                     raw or "")
+        parsed = _pentest.parse_output((tool or "").strip().lower(), raw or "")
     except Exception as e:
         return {"ok": False, "error": f"parse_output failed: {e}"}
+    if enrich_cves and isinstance(parsed, dict) and parsed.get("ok", True):
+        def _fetch_json(url: str) -> Any:
+            status, text, _ = _web_get(url, timeout=25)
+            if not text:
+                raise RuntimeError(f"empty response (HTTP {status})")
+            return json.loads(text)
+        try:
+            parsed = _pentest.enrich_with_cves(parsed, fetch_json=_fetch_json)
+        except Exception as e:
+            parsed["cve_enrichment"] = {"ok": False,
+                                        "error": f"CVE enrichment failed: {e}"}
+    return parsed
 
 
 def tool_methodology(area: str = "", phase: str = "") -> Dict[str, Any]:

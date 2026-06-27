@@ -616,8 +616,18 @@ write_dragon_svg() {
 KALI_DRAGON_SVG_EOF
 }
 
-write_dragon_svg "${INSTALL_DIR}/${APP_ID}.svg"
-write_dragon_svg "${ICON_DIR}/${APP_ID}.svg"
+# Icon: prefer the real Kali logo if it shipped with this install (it's in
+# SRC_DIR for a local checkout, or was fetched into TMP for a curl|bash
+# install — both land in SRC_DIR).  Fall back to the embedded placeholder
+# only if the logo isn't there, so the app always has *an* icon.
+if [ -s "${SRC_DIR}/${APP_ID}.svg" ]; then
+  cp "${SRC_DIR}/${APP_ID}.svg" "${INSTALL_DIR}/${APP_ID}.svg"
+  cp "${SRC_DIR}/${APP_ID}.svg" "${ICON_DIR}/${APP_ID}.svg"
+  ok "icon installed from ${APP_ID}.svg"
+else
+  write_dragon_svg "${INSTALL_DIR}/${APP_ID}.svg"
+  write_dragon_svg "${ICON_DIR}/${APP_ID}.svg"
+fi
 
 # Sanity check: SVG file exists and isn't empty
 if [ ! -s "${ICON_DIR}/${APP_ID}.svg" ]; then

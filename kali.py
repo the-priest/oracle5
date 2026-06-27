@@ -70,7 +70,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -1369,6 +1369,7 @@ class MessageWidget(Gtk.Box):
     def __init__(self, role: str, content: str = "",
                  meta: Optional[Dict[str, Any]] = None,
                  on_run_command: Optional[Callable[[str, str], None]] = None,
+                 on_apply_edit: Optional[Callable[[str, str, Any], None]] = None,
                  on_speak: Optional[Callable[["MessageWidget"], None]] = None,
                  show_thoughts: bool = True):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -1376,6 +1377,7 @@ class MessageWidget(Gtk.Box):
         self.meta = meta or {}
         self._content = content or ""
         self._on_run_command = on_run_command
+        self._on_apply_edit = on_apply_edit
         self._on_speak = on_speak
         self.speak_btn: Optional[Gtk.Button] = None
         self._speak_state = "idle"
@@ -1621,7 +1623,7 @@ class MessageWidget(Gtk.Box):
                                 is_new=d.get("is_new", False),
                                 truncated=d.get("truncated", False),
                                 explanation=str(call.args.get("explanation", "")),
-                                on_apply=self._run_proposed_edit))
+                                on_apply=self._on_apply_edit))
                             _rendered = True
                         except Exception as e:
                             log(f"edit card build failed: {e}")
@@ -3331,6 +3333,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.msg_box.remove(first)
         w = MessageWidget(role, content, meta,
                           on_run_command=self._run_proposed_command,
+                          on_apply_edit=self._run_proposed_edit,
                           on_speak=self._on_message_speak,
                           show_thoughts=self.settings.get("show_thoughts", True))
         self.msg_box.append(w)
@@ -3851,6 +3854,7 @@ class MainWindow(Adw.ApplicationWindow):
             # tokens for finish_streaming, but don't attach it to msg_box.
             self.streaming_msg_widget = MessageWidget(
                 "assistant", "", on_run_command=self._run_proposed_command,
+                on_apply_edit=self._run_proposed_edit,
                 on_speak=self._on_message_speak,
                 show_thoughts=self.settings.get("show_thoughts", True))
             self.streaming_msg_widget.start_streaming()
@@ -4124,7 +4128,9 @@ class MainWindow(Adw.ApplicationWindow):
         if n == "parse_output":
             return lambda: tool_parse_output(
                 a.get("tool", a.get("name", "")),
-                a.get("raw", a.get("output", a.get("text", ""))))
+                a.get("raw", a.get("output", a.get("text", ""))),
+                a.get("enrich_cves", a.get("enrich", False)) not in
+                    (False, "false", "0", 0, None))
         if n == "methodology":
             return lambda: tool_methodology(
                 a.get("area", a.get("topic", "")),
@@ -4476,7 +4482,9 @@ class MainWindow(Adw.ApplicationWindow):
             "parse_output":      lambda a: self._tool_simple(
                 lambda: tool_parse_output(
                     a.get("tool", a.get("name", "")),
-                    a.get("raw", a.get("output", a.get("text", ""))))),
+                    a.get("raw", a.get("output", a.get("text", ""))),
+                    a.get("enrich_cves", a.get("enrich", False)) not in
+                        (False, "false", "0", 0, None))),
             "methodology":       lambda a: self._tool_simple(
                 lambda: tool_methodology(
                     a.get("area", a.get("topic", "")),

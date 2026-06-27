@@ -289,6 +289,7 @@ Two kinds of action, and they are not the same:
 
   Turning raw output into structure:
   <tool name="parse_output">{"tool": "nmap", "raw": "<stdout you captured>"}</tool>  // also httpx, nuclei, naabu, masscan, subfinder, ffuf, feroxbuster, gobuster, katana, whatweb, wpscan, sslscan, testssl, smbmap, netexec, nikto, gitleaks, dalfox, arjun…
+  <tool name="parse_output">{"tool": "nmap", "raw": "<stdout>", "enrich_cves": true}</tool>  // AUTO-CHAIN: parses the scan AND looks up KEV/EPSS-ranked CVEs for every confirmed service+version, attaching a 'cve_enrichment' block. Use this on a service/version scan to skip the per-service cve_lookup — one call gives you the exploitable findings.
 
   Vuln enrichment (run AFTER a banner/version is confirmed by a tool):
   <tool name="cve_lookup">{"product": "OpenSSH", "version": "9.6"}</tool>  // NVD → CISA KEV (exploited in the wild) + EPSS, re-ranked KEV→EPSS→CVSS, with a trust caveat
