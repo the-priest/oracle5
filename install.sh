@@ -373,6 +373,34 @@ if [ $SKIP_HELPERS -eq 0 ]; then
       && ok "UI fonts installed" \
       || warn "font packages unavailable — UI falls back to system fonts"
   fi
+  # JetBrains Mono is the branding/header/code font, but it isn't reliably
+  # packaged on Kali/Debian rolling (the apt package above is often absent —
+  # exactly what happened on this box).  If it still isn't present, fetch the
+  # official release straight into the user font dir: works on any distro,
+  # needs no root.  Best-effort; every branch ends in ok/warn.
+  if fc-list 2>/dev/null | grep -qi "JetBrains Mono"; then
+    ok "JetBrains Mono present"
+  else
+    _fontdir="${HOME}/.local/share/fonts"
+    mkdir -p "$_fontdir" 2>/dev/null || true
+    _jbmver="2.304"
+    _jbmurl="https://github.com/JetBrains/JetBrainsMono/releases/download/v${_jbmver}/JetBrainsMono-${_jbmver}.zip"
+    if command -v curl >/dev/null;  then _dl=(curl -fsSL -o)
+    elif command -v wget >/dev/null; then _dl=(wget -qO)
+    else _dl=(); fi
+    if [ ${#_dl[@]} -gt 0 ] && command -v unzip >/dev/null; then
+      _jbmzip="$(mktemp --suffix=.zip 2>/dev/null || echo /tmp/jbm.zip)"
+      if "${_dl[@]}" "$_jbmzip" "$_jbmurl" 2>/dev/null \
+         && unzip -o -j "$_jbmzip" "fonts/ttf/*.ttf" -d "$_fontdir" >/dev/null 2>&1; then
+        ok "JetBrains Mono installed from official release → $_fontdir"
+      else
+        warn "couldn't fetch JetBrains Mono — UI headers use another mono font"
+      fi
+      rm -f "$_jbmzip" 2>/dev/null || true
+    else
+      warn "need curl/wget + unzip to fetch JetBrains Mono — skipped"
+    fi
+  fi
   # Refresh the font cache so GTK sees them on first launch.
   command -v fc-cache >/dev/null 2>&1 && fc-cache -f >/dev/null 2>&1 || true
 fi

@@ -5726,7 +5726,14 @@ def _scale_css(css_bytes: bytes, scale: float) -> bytes:
 
 
 def main():
-    return KaliApp().run(sys.argv)
+    try:
+        return KaliApp().run(sys.argv)
+    except KeyboardInterrupt:
+        # Ctrl+C from the terminal: GTK/PyGObject re-raises SIGINT as a
+        # KeyboardInterrupt while the main loop unwinds.  Swallow it and
+        # exit cleanly — the window is already shutting down by here, so a
+        # traceback would just be noise.
+        return 0
 
 
 if __name__ == "__main__":

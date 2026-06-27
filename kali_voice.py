@@ -641,28 +641,78 @@ class SpeechToText:
     # ── transcription ──
     def transcribe(self, wav_path: str) -> Tuple[str, Optional[str]]:
         """Returns (text, error).  Blocks — call from a worker thread.
-        Routes to whichever provider _pick_stt chooses (SiliconFlow's
-        SenseVoiceSmall or Groq's Whisper)."""
+
+        Tries the chosen STT provider first (SiliconFlow's SenseVoiceSmall
+        or Groq's Whisper).  If that provider fails with an auth/endpoint
+        error (401/403/404), a server error, or is unreachable, AND another
+        provider has a key set, it falls back to that one automatically —
+        SiliconFlow -> Groq, the same fallback chain chat uses.  This is why
+        a SiliconFlow key that works for chat but is forbidden (403) on the
+        transcription endpoint no longer kills voice: Groq Whisper picks up
+        the slack."""
         s = self.get_settings()
-        picked = self._pick_stt()
-        if not picked:
+        candidates = self._stt_candidates(s)
+        if not candidates:
             self._safe_remove(wav_path)
             return "", ("No transcription key set — add a SiliconFlow or "
                         "Groq key in Settings → Backends.")
-        provider_id, cfg = picked
+        # Read the recording ONCE and keep the bytes so every fallback
+        # attempt can reuse them; bin the temp file immediately after.
+        try:
+            with open(wav_path, "rb") as f:
+                audio = f.read()
+        except Exception as e:
+            self._safe_remove(wav_path)
+            return "", f"could not read recording: {e}"
+        self._safe_remove(wav_path)
+
+        last_err = "transcription failed"
+        for provider_id, cfg in candidates:
+            text, err, retryable = self._transcribe_attempt(
+                provider_id, cfg, audio, s)
+            if err is None:
+                return text, None
+            last_err = err
+            if not retryable:
+                break          # bad audio/request — another provider won't help
+            _log(f"STT: {provider_id} failed ({err}); trying next provider")
+        return "", last_err
+
+    def _stt_candidates(self, s: Dict
+                        ) -> List[Tuple[str, Dict[str, str]]]:
+        """Ordered providers to try: the normally-picked one first, then any
+        OTHER provider that also has a key — so an auth/endpoint failure on
+        the primary can fall back instead of hard-failing.  With only one
+        key set, this returns a single provider and behaviour is unchanged."""
+        out: List[Tuple[str, Dict[str, str]]] = []
+        seen = set()
+        primary = self._pick_stt()
+        if primary:
+            out.append(primary)
+            seen.add(primary[0])
+        for pid in STT_AUTO_ORDER:
+            if pid in seen:
+                continue
+            cfg = STT_PROVIDERS.get(pid)
+            if cfg and (s.get(cfg["key_setting"]) or "").strip():
+                out.append((pid, cfg))
+                seen.add(pid)
+        return out
+
+    def _transcribe_attempt(self, provider_id: str, cfg: Dict[str, str],
+                            audio: bytes, s: Dict
+                            ) -> Tuple[str, Optional[str], bool]:
+        """One provider attempt.  Returns (text, error, retryable).
+        retryable=True means it's worth falling back to another provider
+        (auth/endpoint/server/network failure); False means the request
+        itself was rejected (e.g. 400) or the response was unparseable, so
+        retrying a different provider with the same audio won't help."""
         key = (s.get(cfg["key_setting"]) or "").strip()
         model_setting = cfg.get("model_setting")
         model = ((s.get(model_setting) if model_setting else "") or "").strip()
         if not model:
             model = cfg["default_model"]
         lang = (s.get("stt_language") or "").strip()
-        try:
-            with open(wav_path, "rb") as f:
-                audio = f.read()
-        except Exception as e:
-            return "", f"could not read recording: {e}"
-        finally:
-            self._safe_remove(wav_path)
 
         # Only send fields THIS provider tolerates.  SenseVoice rejects the
         # Whisper extras; Groq accepts them.  `file` + `model` always go.
@@ -692,23 +742,25 @@ class SpeechToText:
                 pass
             _log(f"transcribe HTTP {e.code} ({provider_id}): {body}")
             hint = ""
+            retryable = e.code in (401, 403, 404) or e.code >= 500
             if e.code in (401, 403):
                 hint = f" — check your {provider_id} key in Settings"
             elif e.code == 400:
                 hint = f" — {provider_id} rejected the request: {body[:120]}"
-            return "", f"transcription failed (HTTP {e.code}){hint}"
+            return "", f"transcription failed (HTTP {e.code}){hint}", retryable
         except Exception as e:
             _log(f"transcribe error ({provider_id}): {e}")
-            return "", f"transcription failed: {e}"
+            # network/timeout/connection — worth trying another provider
+            return "", f"transcription failed: {e}", True
         try:
             data = json.loads(raw)
             text = (data.get("text") or "").strip()
             # SenseVoice sometimes wraps output in <|tags|>; strip them.
             text = re.sub(r"<\|[^|]*\|>", "", text).strip()
-            return text, None
+            return text, None, False
         except Exception as e:
             _log(f"transcribe parse error: {e}; raw={raw[:200]}")
-            return "", "could not parse transcription response"
+            return "", "could not parse transcription response", False
 
     @staticmethod
     def _safe_remove(path: str) -> None:

@@ -39,6 +39,8 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "kali_ext"))
 
 import kali_core  # noqa: E402
+import kali_voice  # noqa: E402
+import urllib.error  # noqa: E402
 
 # kali_ext may be imported either as a package (kali_ext.pentest) or, when
 # kali_ext/ is on the path directly, as a bare module (pentest). Try both so
@@ -411,6 +413,100 @@ class TestCveAutoChain(unittest.TestCase):
         # auto-chain must have attempted at least one lookup.
         self.assertGreaterEqual(
             enriched["cve_enrichment"].get("looked_up", 0), 1)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Voice STT provider failover (the SiliconFlow-403 -> Groq-Whisper fix)
+# ─────────────────────────────────────────────────────────────────────────
+def _http_error(code):
+    return urllib.error.HTTPError("http://stt.test", code, "err", {}, None)
+
+
+class TestSttFailover(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.wav = Path(self._tmp.name) / "rec.wav"
+        self.wav.write_bytes(b"RIFF" + b"\0" * 60)  # any bytes; transcribe reads them
+        self._orig_post = kali_voice._post_multipart
+
+    def tearDown(self):
+        kali_voice._post_multipart = self._orig_post
+        self._tmp.cleanup()
+
+    def _stt(self, settings):
+        return kali_voice.SpeechToText(lambda: settings)
+
+    def test_falls_back_to_groq_when_siliconflow_403s(self):
+        # The reported failure: SiliconFlow key works for chat but the
+        # transcription endpoint returns 403. With a Groq key present, voice
+        # must transparently fall back to Groq Whisper instead of failing.
+        def fake_post(url, *a, **k):
+            if "siliconflow" in url:
+                raise _http_error(403)
+            if "groq" in url:
+                return '{"text": "ports are open"}'
+            raise _http_error(404)
+        kali_voice._post_multipart = fake_post
+
+        stt = self._stt({
+            "active_provider": "siliconflow",
+            "siliconflow_api_key": "sk-sf",
+            "groq_api_key": "gsk-groq",
+            "stt_provider": "auto",
+        })
+        text, err = stt.transcribe(str(self.wav))
+        self.assertIsNone(err, f"expected fallback success, got: {err}")
+        self.assertEqual(text, "ports are open")
+
+    def test_single_provider_403_still_surfaces_error(self):
+        # Only SiliconFlow configured -> nothing to fall back to -> the 403
+        # message surfaces, exactly as before. No regression for 1-key users.
+        kali_voice._post_multipart = lambda url, *a, **k: (_ for _ in ()).throw(
+            _http_error(403))
+        stt = self._stt({
+            "active_provider": "siliconflow",
+            "siliconflow_api_key": "sk-sf",
+            "stt_provider": "auto",
+        })
+        text, err = stt.transcribe(str(self.wav))
+        self.assertEqual(text, "")
+        self.assertIn("403", err)
+
+    def test_400_does_not_thrash_providers(self):
+        # A 400 (bad request) is not retryable: it must NOT trigger a second
+        # provider call, since the same audio will fail there too.
+        calls = []
+
+        def fake_post(url, *a, **k):
+            calls.append(url)
+            raise _http_error(400)
+        kali_voice._post_multipart = fake_post
+
+        stt = self._stt({
+            "active_provider": "siliconflow",
+            "siliconflow_api_key": "sk-sf",
+            "groq_api_key": "gsk-groq",
+            "stt_provider": "auto",
+        })
+        text, err = stt.transcribe(str(self.wav))
+        self.assertEqual(text, "")
+        self.assertEqual(len(calls), 1, "400 must not fall through to a 2nd provider")
+
+    def test_no_keys_gives_clear_message(self):
+        stt = self._stt({"active_provider": "siliconflow", "stt_provider": "auto"})
+        text, err = stt.transcribe(str(self.wav))
+        self.assertEqual(text, "")
+        self.assertIn("key", err.lower())
+
+    def test_recording_is_cleaned_up_after_transcription(self):
+        kali_voice._post_multipart = lambda url, *a, **k: '{"text": "ok"}'
+        stt = self._stt({
+            "active_provider": "groq",
+            "groq_api_key": "gsk",
+            "stt_provider": "auto",
+        })
+        stt.transcribe(str(self.wav))
+        self.assertFalse(self.wav.exists(), "temp recording was not removed")
 
 
 if __name__ == "__main__":
