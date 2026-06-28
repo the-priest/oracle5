@@ -103,7 +103,7 @@ OLD_DATA_DIR="${HOME}/.local/share/oracle"
 OLD_CONFIG_DIR="${HOME}/.config/oracle"
 
 REQUIRED_FILES=(kali.py kali_core.py kali_safety.py kali_ledger.py kali_persona.py kali_voice.py)
-OPTIONAL_FILES=(org.thepriest.kali.svg kali-dragon.svg kali-watermark.png kali-cross.svg)
+OPTIONAL_FILES=(org.thepriest.kali.svg kali-dragon.svg kali-watermark.png kali-cross.svg kali-avatar.png)
 # kali_ext sidecar modules — fetched in remote (curl|bash) mode so phones
 # and fresh boxes get the full toolset (headroom / verify / pentest plus the
 # memory/skills/foresight extensions), not just the core four files.
@@ -733,7 +733,7 @@ fi
 # Place the chat-background watermark and the emblem in the install dir so the
 # app finds them at runtime (best-effort — the chat simply has no watermark if
 # the file isn't there).
-for _art in kali-watermark.png kali-dragon.svg kali-cross.svg; do
+for _art in kali-watermark.png kali-dragon.svg kali-cross.svg kali-avatar.png; do
   if [ -s "${SRC_DIR}/${_art}" ]; then
     cp "${SRC_DIR}/${_art}" "${INSTALL_DIR}/${_art}" 2>/dev/null || true
   fi

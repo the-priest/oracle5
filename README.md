@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/the-priest/oracle5/main/install.sh 
 *Offensive-security toolkit · drives your desktop · runs your shell (with a hard floor) · tamper-evident evidence ledger · MCP client · reads files · searches & fact-checks the web · writes & sandbox-tests its own tools · talks and listens.*
 
 **Bring your own model** — SiliconFlow · Groq · Novita · GitHub Models · Google AI Studio
-**`v3.6.0`** · GTK4 + libadwaita · X11 & Wayland · desktop **and** NetHunter mobile · MIT
+**`v3.7.0`** · GTK4 + libadwaita · X11 & Wayland · desktop **and** NetHunter mobile · MIT
 
 </div>
 

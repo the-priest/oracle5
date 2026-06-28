@@ -2655,9 +2655,89 @@ def tool_open_url(url: str) -> Dict[str, Any]:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-# Persistent Playwright browser state, lazily created and reused.
-_browser_state: Dict[str, Any] = {"pw": None, "browser": None, "page": None}
-_browser_lock = threading.Lock()
+# Playwright's sync API is THREAD-AFFINE: a page created on one thread cannot
+# be driven from another.  But every tool call runs on its own background
+# thread, so a persistent page created on call #1 broke on call #2 with
+# greenlet/thread errors — that's what kept the browser "breaking".  The fix:
+# run ALL Playwright operations on ONE dedicated worker thread and marshal each
+# browser op to it.  The Playwright instance then lives on a single thread for
+# its whole life.
+import queue as _queue
+
+
+class _BrowserWorker:
+    def __init__(self):
+        self._cmds: "_queue.Queue" = _queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._launch_err: Optional[str] = None
+
+    def _ensure_thread(self):
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._launch_err = None
+                self._thread = threading.Thread(target=self._run, daemon=True)
+                self._thread.start()
+
+    def _run(self):
+        pw = browser = page = None
+        try:
+            from playwright.sync_api import sync_playwright
+            pw = sync_playwright().start()
+            # Visible window so the operator can watch; fall back to headless
+            # if there's no display (or the GPU/sandbox refuses a window).
+            try:
+                browser = pw.chromium.launch(headless=False)
+            except Exception:
+                browser = pw.chromium.launch(headless=True)
+            ctx = browser.new_context(
+                user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+                viewport={"width": 1280, "height": 800})
+            page = ctx.new_page()
+        except Exception as e:
+            self._launch_err = f"browser launch failed: {type(e).__name__}: {e}"
+            # drain any queued ops with the launch error
+            while True:
+                cmd = self._cmds.get()
+                if cmd is None:
+                    return
+                _fn, rq = cmd
+                rq.put({"ok": False, "error": self._launch_err})
+        while True:
+            cmd = self._cmds.get()
+            if cmd is None:
+                break
+            fn, rq = cmd
+            try:
+                rq.put(fn(page))
+            except Exception as e:
+                rq.put({"ok": False,
+                        "error": f"{type(e).__name__}: {str(e)[:240]}"})
+        try:
+            browser.close()
+            pw.stop()
+        except Exception:
+            pass
+
+    def call(self, fn, timeout: float = 60.0) -> Dict[str, Any]:
+        self._ensure_thread()
+        rq: "_queue.Queue" = _queue.Queue()
+        self._cmds.put((fn, rq))
+        try:
+            return rq.get(timeout=timeout)
+        except _queue.Empty:
+            return {"ok": False, "error": "browser operation timed out"}
+
+    def shutdown(self):
+        with self._lock:
+            t = self._thread
+            if t and t.is_alive():
+                self._cmds.put(None)
+            self._thread = None
+
+
+_browser_worker = _BrowserWorker()
 
 
 def _browser_available() -> bool:
@@ -2665,75 +2745,92 @@ def _browser_available() -> bool:
     return importlib.util.find_spec("playwright") is not None
 
 
-def _ensure_browser() -> Tuple[Optional[Any], Optional[str]]:
-    """Return (page, None) on success or (None, error) if Playwright is
-    missing or the browser couldn't launch."""
-    if not _browser_available():
-        return None, ("Playwright not installed. Enable browser automation "
-                      "with:  pip install playwright  &&  playwright install "
-                      "chromium")
-    with _browser_lock:
-        if _browser_state["page"] is not None:
-            return _browser_state["page"], None
-        try:
-            from playwright.sync_api import sync_playwright
-            pw = sync_playwright().start()
-            browser = pw.chromium.launch(headless=False)
-            page = browser.new_page()
-            _browser_state.update({"pw": pw, "browser": browser, "page": page})
-            return page, None
-        except Exception as e:
-            return None, f"browser launch failed: {type(e).__name__}: {e}"
-
-
 def tool_browser(action: str, target: str = "",
                  value: str = "") -> Dict[str, Any]:
-    """Drive a real browser for automation.  Actions:
-      • goto      target=URL                  — navigate
-      • read      (no target)                 — return visible page text
-      • click     target=CSS-or-text          — click an element
-      • fill      target=CSS  value=TEXT       — type into a field
-      • screenshot target=optional save path   — capture the page
-      • title / url                            — page metadata
-      • close                                  — shut the browser down
-    A single browser session persists across calls so logins stick.
+    """Drive a real browser (one persistent session, so logins stick).  Actions:
+      • goto       target=URL                 navigate
+      • read       (no target)                return the visible page text
+      • click      target=CSS-or-text         click an element (CSS, else text)
+      • fill/type  target=CSS  value=TEXT      type into a field (CSS/label/ph)
+      • press      target=KEY                  press a key (e.g. Enter, Tab)
+      • submit     target=CSS  value=TEXT      fill a field then press Enter
+      • scroll     value=down|up|end|top       scroll the page
+      • back / forward                         history navigation
+      • links      (no target)                 list visible links (text -> href)
+      • screenshot target=optional path        capture the page
+      • title / url                            page metadata
+      • close                                  shut the browser down
     Requires Playwright (clear error returned if absent)."""
     action = (action or "").strip().lower()
+    if not _browser_available():
+        return {"ok": False, "error":
+                "Playwright not installed. Enable browser automation with:  "
+                "pip install playwright  &&  playwright install chromium"}
     if action == "close":
-        with _browser_lock:
-            try:
-                if _browser_state["browser"]:
-                    _browser_state["browser"].close()
-                if _browser_state["pw"]:
-                    _browser_state["pw"].stop()
-            except Exception:
-                pass
-            _browser_state.update({"pw": None, "browser": None, "page": None})
+        _browser_worker.shutdown()
         return {"ok": True, "closed": True}
 
-    page, err = _ensure_browser()
-    if err:
-        return {"ok": False, "error": err}
-    try:
+    def op(page) -> Dict[str, Any]:
         if action == "goto":
             url = target.strip()
             if "://" not in url:
                 url = "https://" + url
             page.goto(url, timeout=30000, wait_until="domcontentloaded")
             return {"ok": True, "url": page.url, "title": page.title()}
-        if action == "read":
-            text = page.inner_text("body")[:8000]
-            return {"ok": True, "text": text, "url": page.url}
+        if action in ("read", "text"):
+            return {"ok": True, "text": page.inner_text("body")[:8000],
+                    "url": page.url, "title": page.title()}
         if action == "click":
-            # try CSS first, then visible text
             try:
                 page.click(target, timeout=8000)
             except Exception:
                 page.get_by_text(target, exact=False).first.click(timeout=8000)
             return {"ok": True, "clicked": target, "url": page.url}
-        if action == "fill":
-            page.fill(target, value, timeout=8000)
+        if action in ("fill", "type"):
+            try:
+                page.fill(target, value, timeout=8000)
+            except Exception:
+                try:
+                    page.get_by_placeholder(target).first.fill(
+                        value, timeout=6000)
+                except Exception:
+                    page.get_by_label(target).first.fill(value, timeout=6000)
             return {"ok": True, "filled": target, "chars": len(value)}
+        if action == "press":
+            page.keyboard.press(target or "Enter")
+            return {"ok": True, "pressed": target or "Enter", "url": page.url}
+        if action == "submit":
+            if target:
+                try:
+                    page.fill(target, value, timeout=8000)
+                except Exception:
+                    page.get_by_placeholder(target).first.fill(
+                        value, timeout=6000)
+            page.keyboard.press("Enter")
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+            return {"ok": True, "submitted": True, "url": page.url}
+        if action == "scroll":
+            v = (value or "down").lower()
+            js = {"down": "window.scrollBy(0, window.innerHeight*0.9)",
+                  "up": "window.scrollBy(0, -window.innerHeight*0.9)",
+                  "end": "window.scrollTo(0, document.body.scrollHeight)",
+                  "top": "window.scrollTo(0, 0)"}.get(v,
+                  "window.scrollBy(0, window.innerHeight*0.9)")
+            page.evaluate(js)
+            return {"ok": True, "scrolled": v}
+        if action == "back":
+            page.go_back(timeout=15000)
+            return {"ok": True, "url": page.url}
+        if action == "forward":
+            page.go_forward(timeout=15000)
+            return {"ok": True, "url": page.url}
+        if action == "links":
+            links = page.eval_on_selector_all(
+                "a[href]",
+                "els => els.slice(0,60).map(e => "
+                "({t: (e.innerText||'').trim().slice(0,80), h: e.href}))"
+                ".filter(x => x.t)")
+            return {"ok": True, "links": links, "count": len(links)}
         if action == "screenshot":
             ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             path = (os.path.expanduser(target) if target
@@ -2745,8 +2842,8 @@ def tool_browser(action: str, target: str = "",
         if action == "url":
             return {"ok": True, "url": page.url}
         return {"ok": False, "error": f"unknown browser action '{action}'"}
-    except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+    return _browser_worker.call(op)
 
 
 # ═════════════════════════════════════════════════════════════════════

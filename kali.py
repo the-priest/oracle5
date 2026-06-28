@@ -77,7 +77,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "3.6.0"
+VERSION = "3.7.0"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -291,24 +291,26 @@ headerbar {
 
 /* User: right-aligned bubble */
 .msg-user {
-    background-color: #1b1f26;
-    color: #d6dbe2;
+    background-color: rgba(46, 230, 95, 0.08);
+    color: #eef2f6;
     border-radius: 12px 12px 4px 12px;
     padding: 18px 22px;
     margin: 8px 12px 8px 60px;
     font-size: 30px;
     line-height: 1.45;
-    border: 1px solid #262b33;
+    border: 1px solid rgba(46, 230, 95, 0.22);
 }
 
-/* Assistant: left-aligned, transparent, larger text */
+/* Assistant: left-aligned, a solid visible bubble (was transparent) */
 .msg-assistant {
-    background-color: transparent;
-    color: #d6dbe2;
-    padding: 12px 18px;
-    margin: 8px 12px;
+    background-color: #161a20;
+    color: #e8ebef;
+    padding: 16px 20px;
+    margin: 8px 60px 8px 12px;
     font-size: 30px;
     line-height: 1.55;
+    border-radius: 12px 12px 12px 4px;
+    border: 1px solid #242c34;
 }
 
 /* Compact tool indicator (replaces visible JSON dump) */
@@ -869,22 +871,32 @@ link, button.link, *:link { color: #2ee65f; }
     border-color: #15a838;
     background-color: rgba(46, 230, 95, 0.12);
 }
-/* Send button - menacing dragon red, the primary action (also the Stop btn) */
+/* Send button - big, dragon-red, wears the logo; glows while working */
 .send-button {
     background: linear-gradient(135deg, #8b0010, #ff2d3a);
     border: 1px solid #ff5566;
-    border-radius: 12px;
+    border-radius: 16px;
     color: #ffffff;
-    padding: 8px 14px;
-    box-shadow: 0 0 10px rgba(255, 45, 58, 0.45);
+    min-width: 62px;
+    min-height: 62px;
+    padding: 8px;
+    box-shadow: 0 0 12px rgba(255, 45, 58, 0.5);
 }
 .send-button:hover {
     background: linear-gradient(135deg, #b3000f, #ff4452);
-    box-shadow: 0 0 16px rgba(255, 45, 58, 0.6);
+    box-shadow: 0 0 18px rgba(255, 45, 58, 0.65);
     border-color: #ff6f7a;
 }
 .send-button:active {
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.send-button.working {
+    animation: sendglow 1.1s ease-in-out infinite;
+}
+@keyframes sendglow {
+    0%   { box-shadow: 0 0 10px rgba(255, 45, 58, 0.45); border-color: #ff5566; }
+    50%  { box-shadow: 0 0 26px rgba(255, 45, 58, 0.95), 0 0 40px rgba(255,138,47,0.5); border-color: #ff9a3f; }
+    100% { box-shadow: 0 0 10px rgba(255, 45, 58, 0.45); border-color: #ff5566; }
 }
 /* Header buttons (sidebar toggle, new chat) - blend into the header, with a
    quiet dragon-green accent only on hover so they don't draw the eye. */
@@ -1650,6 +1662,22 @@ def _find_dragon_svg() -> Optional[str]:
 _DRAGON_SVG_PATH = _find_dragon_svg()
 
 
+def _find_avatar_png() -> Optional[str]:
+    """Locate the dragon PNG used as Kali's chat avatar (clean, no ring)."""
+    candidates = [
+        os.path.expanduser("~/.local/share/kali/kali-avatar.png"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "kali-avatar.png"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+_AVATAR_PNG_PATH = _find_avatar_png()
+
+
 def _find_watermark_svg() -> Optional[str]:
     """Locate the dragon watermark for the chat background (PNG preferred,
     then SVG).  Falls back to the emblem SVG, then None (no watermark)."""
@@ -1715,6 +1743,18 @@ def Avatar(kind: str = "user") -> Gtk.Widget:
     Gtk.Label (both are valid box children) rather than a custom widget
     subclass — simpler and impossible to crash on vfunc mismatch."""
     size = _scaled(52, floor=28)
+    if kind == "kali" and _AVATAR_PNG_PATH:
+        # Preferred: the clean dragon PNG (no ring) as the chat avatar.
+        try:
+            img = Gtk.Image.new_from_file(_AVATAR_PNG_PATH)
+            img.set_pixel_size(size)
+            img.set_valign(Gtk.Align.START)
+            img.add_css_class("avatar")
+            img.add_css_class("avatar-dragon")
+            img.set_size_request(size, size)
+            return img
+        except Exception as e:
+            log(f"dragon PNG avatar load failed: {e}")
     if kind == "kali" and _DRAGON_SVG_PATH:
         try:
             # Rasterise to a bounded bitmap instead of a live SVG paintable —
@@ -3760,23 +3800,22 @@ class MainWindow(Adw.ApplicationWindow):
         kc.connect("key-pressed", self._on_input_key)
         self.input_view.add_controller(kc)
 
-        # Mic — tap to talk, tap again to stop & transcribe.  Only shown
-        # when a recorder is present on the box.
+        # (Mic / speech-to-text button removed — the composer leads with a
+        # single big Send button instead.)
         self.mic_btn = None
-        if self.stt is not None and self.stt.recorder_available():
-            self.mic_btn = Gtk.Button()
-            self.mic_btn.set_icon_name("audio-input-microphone-symbolic")
-            self.mic_btn.add_css_class("mic-button")
-            self.mic_btn.set_valign(Gtk.Align.END)
-            self.mic_btn.set_tooltip_text("Speak (tap to start, tap to send)")
-            self.mic_btn.connect("clicked", lambda *_: self._on_mic_clicked())
-            ibox.append(self.mic_btn)
 
+        # Big Send button wearing the dragon logo.  It glows while Kali is
+        # working (a tap then stops her) rather than turning into a stop icon.
         self.send_btn = Gtk.Button()
-        self.send_btn.set_icon_name("send-to-symbolic")
         self.send_btn.add_css_class("send-button")
         self.send_btn.set_valign(Gtk.Align.END)
         self.send_btn.set_tooltip_text("Send")
+        if _AVATAR_PNG_PATH:
+            _send_img = Gtk.Image.new_from_file(_AVATAR_PNG_PATH)
+            _send_img.set_pixel_size(_scaled(34, floor=26))
+            self.send_btn.set_child(_send_img)
+        else:
+            self.send_btn.set_icon_name("send-to-symbolic")
         self.send_btn.connect("clicked", lambda *_: self._on_send_or_stop())
         ibox.append(self.send_btn)
 
@@ -3954,44 +3993,10 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._force_scroll_to_bottom)
 
     def _show_empty_state(self):
-        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        wrap.set_halign(Gtk.Align.CENTER)
-        wrap.set_valign(Gtk.Align.CENTER)
-        wrap.set_margin_top(80)
-        wrap.set_margin_bottom(40)
-        wrap.set_margin_start(24)
-        wrap.set_margin_end(24)
-
-        title = Gtk.Label(label="Hello, Priest.")
-        title.add_css_class("empty-state-title")
-        wrap.append(title)
-
-        body = Gtk.Label()
-        body.set_markup(
-            "Ask me something.  Or hit a button below to put me to work.\n\n"
-            "Try: <i>audit my system</i>, <i>what's in my Downloads</i>, "
-            "<i>any security updates</i>")
-        body.add_css_class("empty-state-body")
-        body.set_justify(Gtk.Justification.CENTER)
-        body.set_wrap(True)
-        body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        body.set_max_width_chars(50)
-        wrap.append(body)
-
-        chips_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        chips_row.set_halign(Gtk.Align.CENTER)
-        for label, cb in [
-            ("Audit my system", self._user_action_audit),
-            ("Recent downloads", self._user_action_downloads),
-            ("Pending updates", self._user_action_updates),
-        ]:
-            chip = Gtk.Button(label=label)
-            chip.add_css_class("quick-chip")
-            chip.connect("clicked", lambda *_, c=cb: c())
-            chips_row.append(chip)
-        wrap.append(chips_row)
-
-        self.msg_box.append(wrap)
+        # Intentionally blank: a new chat just shows the dragon watermark.
+        # No greeting text, no suggestion chips (those actions live in the
+        # composer toolbar already).
+        return
 
     def _refresh_subtitle(self):
         bits = []
@@ -4064,15 +4069,14 @@ class MainWindow(Adw.ApplicationWindow):
             self._send_user_message()
 
     def _set_send_mode(self, working: bool):
-        """Morph the primary button between Send and Stop."""
+        """Keep the dragon logo at all times.  While Kali is working the button
+        GLOWS (and a tap stops her); idle, it's the normal Send button."""
         if working:
-            self.send_btn.set_icon_name("media-playback-stop-symbolic")
-            self.send_btn.set_tooltip_text("Stop")
-            self.send_btn.add_css_class("stopping")
+            self.send_btn.set_tooltip_text("Working… tap to stop")
+            self.send_btn.add_css_class("working")
         else:
-            self.send_btn.set_icon_name("send-to-symbolic")
             self.send_btn.set_tooltip_text("Send")
-            self.send_btn.remove_css_class("stopping")
+            self.send_btn.remove_css_class("working")
         self.send_btn.set_sensitive(True)
 
     def _request_stop(self):

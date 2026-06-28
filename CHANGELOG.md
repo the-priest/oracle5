@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.7.0 — Browser fixed, composer & chat redesign
+
+- **Browser tools actually work now.** Playwright's sync API is thread-bound, but
+  every tool call ran on its own thread — so the browser worked once then threw
+  thread/greenlet errors on every call after. All browser operations now run on
+  one dedicated worker thread, so a session survives across calls. Also added
+  more actions so Kali can browse freely: submit (fill + Enter), press a key,
+  scroll, back/forward, and list links — alongside goto/read/click/fill/screenshot.
+- **Kali's avatar is the clean dragon now** — a solid silver dragon PNG, and the
+  green ring is gone from the emblem SVG (it looked like a sticker).
+- **Chat bubbles reworked.** Your messages are translucent (the dragon shows
+  through); Kali's were invisible (transparent) and are now a solid, clearly
+  visible bubble.
+- **New chats are clean** — the "Hello, Priest" greeting and the
+  audit/downloads/updates suggestion buttons are gone (those live in the
+  toolbar); a fresh chat just shows the dragon watermark.
+- **One big Send button.** The mic/STT button is removed; Send is now large and
+  wears the dragon logo. While Kali is working it pulses with a red glow instead
+  of turning into a stop icon — and tapping it still stops her.
+
+---
+
 ## v3.6.0 — Providers, on-the-fly model switching, UI overhaul
 
 - **Switch model/provider from the composer.** A new button above the text box

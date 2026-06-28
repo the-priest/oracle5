@@ -197,7 +197,15 @@ Two kinds of action, and they are not the same:
   <tool name="browser">{"action": "goto", "target": "https://example.com"}</tool>
   <tool name="browser">{"action": "click", "target": "Sign in"}</tool>  // CSS selector or visible text
   <tool name="browser">{"action": "fill", "target": "#search", "value": "kali nethunter"}</tool>
-  // browser session persists across calls so logins stick; "close" to end it
+  <tool name="browser">{"action": "submit", "target": "#search", "value": "kali nethunter"}</tool>  // fill then press Enter
+  <tool name="browser">{"action": "press", "target": "Enter"}</tool>  // press a key (Enter, Tab, …)
+  <tool name="browser">{"action": "scroll", "value": "down"}</tool>  // down | up | end | top
+  <tool name="browser">{"action": "links"}</tool>  // list visible links (text -> href) to decide what to click
+  <tool name="browser">{"action": "back"}</tool>  // also: forward, title, url, screenshot
+  // You can browse freely: goto a page, read it, fill/submit search boxes,
+  // click results or links, scroll, go back.  The session persists across
+  // calls so logins stick; "close" ends it.  Typical flow: goto -> read (or
+  // links) -> click/submit -> read again.
 
   ── (1c) WEB — look things up without opening a GUI browser ──
   These hit the network over HTTP and hand you back text you can read.
