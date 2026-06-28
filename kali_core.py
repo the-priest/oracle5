@@ -285,6 +285,9 @@ DEFAULT_SETTINGS = {
                                         # by default — MCP is an RCE surface;
                                         # tool args are safety-screened + logged)
     "mcp_servers":             [],      # list of {name, command, args, env, cwd}
+    "chat_render_images":      True,    # fetch & show images inline in chat
+                                        # (off → image links shown as text;
+                                        # turn off for OPSEC / no host contact)
     "worker_enabled":          False,   # the headless systemd --user companion
     "worker_interval_seconds": 300,     # worker poll cadence (when enabled)
     "one_command_at_a_time":   True,    # never propose/run >1 command per message
@@ -3177,6 +3180,79 @@ def tool_web_search(query: str, max_results: int = 6,
     }
 
 
+def tool_image_search(query: str, max_results: int = 4) -> Dict[str, Any]:
+    """Search the web for IMAGES and return direct image URLs, so Kali can show
+    pictures inline in chat.  No API key — uses DuckDuckGo's image endpoint
+    (fetch a one-time vqd token from the search page, then the image JSON).
+    Returns each result's image URL, thumbnail, title, source and dimensions.
+
+    To actually display them, embed the image URLs in your reply as markdown —
+    ![short description](image_url) — and the chat renders them as pictures."""
+    import urllib.parse
+    import json as _json
+    query = (query or "").strip()
+    if not query:
+        return {"ok": False, "error": "no query"}
+    max_results = max(1, min(int(max_results or 4), 10))
+    q = urllib.parse.quote(query)
+
+    # Step 1: get the vqd token DDG requires for the image endpoint.
+    vqd = ""
+    try:
+        _, html, _ = _web_get(f"https://duckduckgo.com/?q={q}&iax=images&ia=images",
+                              timeout=_WEB_TIMEOUT)
+        m = (re.search(r'vqd=["\']([\w-]+)["\']', html)
+             or re.search(r'vqd=([\w-]+)&', html)
+             or re.search(r'"vqd":"([\w-]+)"', html))
+        if m:
+            vqd = m.group(1)
+    except Exception as e:
+        return {"ok": False, "error": f"image search token fetch failed: {e}"}
+    if not vqd:
+        return {"ok": False,
+                "error": "could not obtain image-search token (DuckDuckGo "
+                         "may have changed; try again or use web_search)"}
+
+    # Step 2: hit the image JSON endpoint with the token.
+    results: List[Dict[str, Any]] = []
+    try:
+        iu = (f"https://duckduckgo.com/i.js?l=us-en&o=json&q={q}"
+              f"&vqd={vqd}&f=,,,,,&p=1")
+        _, body, _ = _web_get(iu, timeout=_WEB_TIMEOUT, extra_headers={
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": "https://duckduckgo.com/",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        data = _json.loads(body)
+        for it in (data.get("results") or [])[:max_results]:
+            img = it.get("image") or ""
+            if not img.startswith("http"):
+                continue
+            results.append({
+                "title": (it.get("title") or "").strip(),
+                "image": img,
+                "thumbnail": it.get("thumbnail") or "",
+                "source": it.get("url") or it.get("source") or "",
+                "width": it.get("width"),
+                "height": it.get("height"),
+            })
+    except Exception as e:
+        return {"ok": False, "error": f"image search failed: {e}"}
+
+    if not results:
+        return {"ok": True, "query": query, "results": [],
+                "text": f"No images found for '{query}'."}
+
+    lines = [f"{len(results)} image(s) for '{query}' — embed any as "
+             f"![desc](url) to show it:"]
+    for r in results:
+        dim = (f" ({r['width']}x{r['height']})"
+               if r.get("width") and r.get("height") else "")
+        lines.append(f"  • {r['title'] or 'image'}{dim}: {r['image']}")
+    return {"ok": True, "query": query, "results": results,
+            "text": "\n".join(lines)}
+
+
 def tool_web_read(url: str, max_chars: int = 6000) -> Dict[str, Any]:
     """Fetch one URL and return its readable text (markup stripped).  Tries a
     direct fetch first, then a reader proxy, then the Wayback Machine, so a
@@ -3516,6 +3592,33 @@ _OSINT_SITES: List[Tuple[str, str, str, str]] = [
 ]
 
 
+def _extract_og_image(body: str, base_url: str = "") -> str:
+    """Pull a profile/preview image URL from a page's social meta tags
+    (og:image, twitter:image).  Most profile pages set og:image to the user's
+    avatar, so this gives Kali a picture to show for a found OSINT hit."""
+    if not body:
+        return ""
+    for pat in (
+        r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+    ):
+        m = re.search(pat, body, re.IGNORECASE)
+        if m:
+            u = m.group(1).strip()
+            if u.startswith("//"):
+                u = "https:" + u
+            elif u.startswith("/") and base_url:
+                try:
+                    from urllib.parse import urljoin
+                    u = urljoin(base_url, u)
+                except Exception:
+                    pass
+            if u.startswith("http"):
+                return u
+    return ""
+
+
 def _osint_check_one(entry: Tuple[str, str, str, str], username: str,
                      timeout: int) -> Dict[str, str]:
     name, tmpl, kind, marker = entry
@@ -3527,14 +3630,16 @@ def _osint_check_one(entry: Tuple[str, str, str, str], username: str,
                 "detail": type(e).__name__}
     if kind == "status":
         if status == 200:
-            return {"site": name, "url": url, "status": "found"}
+            return {"site": name, "url": url, "status": "found",
+                    "image": _extract_og_image(body, url)}
         if status in (404, 410):
             return {"site": name, "url": url, "status": "absent"}
         return {"site": name, "url": url, "status": "unknown",
                 "detail": f"HTTP {status}"}
     if kind == "present":
         if status == 200 and marker.lower() in body.lower():
-            return {"site": name, "url": url, "status": "found"}
+            return {"site": name, "url": url, "status": "found",
+                    "image": _extract_og_image(body, url)}
         return {"site": name, "url": url, "status": "absent"}
     if kind == "absent":
         if status != 200:
@@ -3542,7 +3647,8 @@ def _osint_check_one(entry: Tuple[str, str, str, str], username: str,
                     "detail": f"HTTP {status}"}
         if marker.lower() in body.lower():
             return {"site": name, "url": url, "status": "absent"}
-        return {"site": name, "url": url, "status": "found"}
+        return {"site": name, "url": url, "status": "found",
+                "image": _extract_og_image(body, url)}
     return {"site": name, "url": url, "status": "unknown"}
 
 
@@ -3594,7 +3700,10 @@ def tool_osint_username(username: str, sites: str = "",
     if found:
         lines.append("\nFOUND:")
         for r in found:
-            lines.append(f"  • {r['site']}: {r['url']}")
+            img = f"  [avatar: {r['image']}]" if r.get("image") else ""
+            lines.append(f"  • {r['site']}: {r['url']}{img}")
+    if any(r.get("image") for r in found):
+        lines.append("\n(To show an avatar, embed it as ![name](avatar_url).)")
     if unknown:
         lines.append("\nINCONCLUSIVE (these sites cloak missing profiles — "
                      "open by hand to confirm):")

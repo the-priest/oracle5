@@ -21,6 +21,7 @@ import os
 import re
 import json
 import threading
+import urllib.request
 import datetime
 from typing import List, Dict, Any, Optional, Callable
 
@@ -42,6 +43,7 @@ from kali_core import (
     tool_make_dir, tool_copy_path, tool_move_path, tool_delete_path,
     tool_path_info, tool_open_url, tool_browser,
     tool_web_search, tool_web_read, tool_github,
+    tool_image_search,
     tool_web_verify, tool_tooling_check, tool_pentest_plan, tool_cve_lookup,
     tool_parse_output, tool_methodology, tool_wordlist_find,
     tool_cheatsheet, tool_report_findings,
@@ -74,7 +76,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -364,6 +366,19 @@ headerbar {
     border-radius: 6px;
     padding: 0;
     margin: 8px 4px;
+}
+.image-block {
+    margin: 8px 4px;
+}
+.chat-image {
+    border: 1px solid #262b33;
+    border-radius: 8px;
+    background-color: #0a0c0f;
+}
+.image-caption {
+    color: #7d8794;
+    font-size: 11px;
+    margin: 2px 2px;
 }
 .code-block-header {
     background-color: #14171c;
@@ -1011,17 +1026,49 @@ def split_message_into_blocks(text: str) -> List[Dict[str, str]]:
         if m.start() > last:
             pre = text[last:m.start()].strip("\n")
             if pre:
-                blocks.append({"kind": "text", "content": pre})
+                blocks.extend(_split_text_and_images(pre))
         lang = m.group(1) or "text"
         code = m.group(2).rstrip("\n")
         blocks.append({"kind": "code", "lang": lang, "content": code})
         last = m.end()
     tail = text[last:].strip("\n")
     if tail:
-        blocks.append({"kind": "text", "content": tail})
+        blocks.extend(_split_text_and_images(tail))
     if not blocks:
         blocks.append({"kind": "text", "content": text})
     return blocks
+
+
+# Markdown image syntax: ![alt](url) — optionally with a "title" after the URL.
+# This is how the model asks Kali to SHOW a picture inline (a web image-search
+# result, an OSINT profile photo, a screenshot it just took, …): it simply
+# writes the image in markdown and the renderer turns it into a real picture.
+IMAGE_MD_RE = re.compile(
+    r'!\[([^\]]*)\]\(\s*(<?)(https?://[^)\s]+?|file://[^)\s]+?|/[^)\s]+?)\2'
+    r'(?:\s+"[^"]*")?\s*\)')
+
+
+def _split_text_and_images(text: str) -> List[Dict[str, str]]:
+    """Split a plain-text segment into alternating text and image blocks, so an
+    inline ![alt](url) becomes its own rendered picture while the prose around
+    it stays prose."""
+    out: List[Dict[str, str]] = []
+    last = 0
+    for m in IMAGE_MD_RE.finditer(text):
+        if m.start() > last:
+            pre = text[last:m.start()].strip("\n")
+            if pre:
+                out.append({"kind": "text", "content": pre})
+        out.append({"kind": "image",
+                    "url": m.group(3).strip(),
+                    "alt": (m.group(1) or "").strip()})
+        last = m.end()
+    tail = text[last:].strip("\n") if last else text
+    if tail.strip():
+        out.append({"kind": "text", "content": tail})
+    elif not out:
+        out.append({"kind": "text", "content": text})
+    return out
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1090,6 +1137,131 @@ class CodeBlockWidget(Gtk.Box):
                 lambda: (btn.set_icon_name("edit-copy-symbolic") or False))
         except Exception:
             pass
+
+
+# Whether to fetch & render remote images inline.  Default on; the app sets it
+# from settings at startup.  Off → image markdown is shown as a tappable link
+# instead, for operators who don't want the chat reaching out to image hosts.
+_RENDER_IMAGES = True
+
+
+class ImageWidget(Gtk.Box):
+    """An image rendered inline in chat from a URL (http/https/file/local path).
+
+    The model shows a picture by emitting markdown — ![alt](url) — and this
+    widget turns it into a real image: a web image-search result, an OSINT
+    profile photo, a screenshot Kali just took.  The download and decode happen
+    OFF the UI thread (chat never blocks), the bytes are size-capped, and the
+    picture is scaled down to fit the bubble.  Any failure degrades to a small
+    caption with the link, so a dead URL can never break the conversation."""
+
+    _MAX_BYTES = 12_000_000          # don't pull more than ~12 MB for one image
+    _MAX_W = 480                     # display cap (px) — scaled down, never up
+    _MAX_H = 480
+    _UA = "Mozilla/5.0 (X11; Linux x86_64) Kali/3.2 image-fetch"
+
+    def __init__(self, url: str, alt: str = ""):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        self.add_css_class("image-block")
+        self.url = (url or "").strip()
+        self.alt = (alt or "").strip()
+        self._caption = Gtk.Label(label=(self.alt or "loading image…"),
+                                  xalign=0.0)
+        self._caption.add_css_class("image-caption")
+        self._caption.set_wrap(True)
+        self._caption.set_max_width_chars(48)
+        self.append(self._caption)
+        try:
+            threading.Thread(target=self._load, daemon=True).start()
+        except Exception as e:
+            self._fail(str(e))
+
+    # — worker thread —
+    def _load(self):
+        try:
+            data = self._fetch_bytes()
+            tex = self._decode(data)
+        except Exception as e:
+            GLib.idle_add(lambda m=str(e): self._fail(m) or False)
+            return
+        GLib.idle_add(lambda: self._show(tex) or False)
+
+    def _fetch_bytes(self) -> bytes:
+        u = self.url
+        if u.startswith("file://"):
+            u = u[7:]
+        if u.startswith("/"):  # local file path
+            with open(u, "rb") as f:
+                return f.read(self._MAX_BYTES)
+        if not (u.startswith("http://") or u.startswith("https://")):
+            raise ValueError("unsupported image URL scheme")
+        req = urllib.request.Request(u, headers={
+            "User-Agent": self._UA,
+            "Accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
+        })
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.read(self._MAX_BYTES)
+
+    def _decode(self, data: bytes):
+        if not data:
+            raise ValueError("empty image")
+        loader = GdkPixbuf.PixbufLoader()
+        try:
+            loader.write(data)
+        except TypeError:
+            loader.write_bytes(GLib.Bytes.new(data))
+        loader.close()
+        pb = loader.get_pixbuf()
+        if pb is None:
+            raise ValueError("could not decode image")
+        w, h = pb.get_width(), pb.get_height()
+        if w <= 0 or h <= 0:
+            raise ValueError("bad image dimensions")
+        scale = min(self._MAX_W / w, self._MAX_H / h, 1.0)
+        if scale < 1.0:
+            pb = pb.scale_simple(max(1, int(w * scale)), max(1, int(h * scale)),
+                                 GdkPixbuf.InterpType.BILINEAR)
+        return Gdk.Texture.new_for_pixbuf(pb)
+
+    # — UI thread —
+    def _show(self, tex):
+        try:
+            pic = Gtk.Picture.new_for_paintable(tex)
+            pic.set_can_shrink(True)
+            pic.add_css_class("chat-image")
+            pic.set_halign(Gtk.Align.START)
+            pic.set_size_request(tex.get_width(), tex.get_height())
+            if self.alt:
+                pic.set_tooltip_text(self.alt)
+            try:
+                self.remove(self._caption)
+            except Exception:
+                pass
+            self.prepend(pic)
+            if self.alt:
+                cap = Gtk.Label(label=self.alt, xalign=0.0)
+                cap.add_css_class("image-caption")
+                cap.set_wrap(True)
+                cap.set_max_width_chars(48)
+                self.append(cap)
+        except Exception as e:
+            self._fail(str(e))
+        return False
+
+    def _fail(self, msg: str):
+        try:
+            shown = self.alt or self.url
+            self._caption.set_markup(
+                f"🖼 <i>couldn't load image</i> — "
+                f"<a href=\"{GLib.markup_escape_text(self.url)}\">"
+                f"{GLib.markup_escape_text(shown[:80])}</a>")
+        except Exception:
+            try:
+                self._caption.set_text(f"🖼 couldn't load image: {self.url}")
+            except Exception:
+                pass
+        log(f"image load failed ({self.url}): {msg}")
+        return False
 
 
 class ProposedCommandWidget(Gtk.Box):
@@ -1604,6 +1776,23 @@ class MessageWidget(Gtk.Box):
             if b["kind"] == "code":
                 self._blocks_container.append(
                     CodeBlockWidget(b["content"], b["lang"]))
+            elif b["kind"] == "image":
+                if _RENDER_IMAGES:
+                    self._blocks_container.append(
+                        ImageWidget(b.get("url", ""), b.get("alt", "")))
+                else:
+                    # Image rendering disabled — show a tappable link instead so
+                    # nothing reaches out to the image host unasked.
+                    lbl = _make_wrap_label()
+                    alt = b.get("alt") or "image"
+                    url = b.get("url", "")
+                    try:
+                        lbl.set_markup(
+                            f"🖼 <a href=\"{GLib.markup_escape_text(url)}\">"
+                            f"{GLib.markup_escape_text(alt)}</a>")
+                    except Exception:
+                        lbl.set_text(f"🖼 {url}")
+                    self._blocks_container.append(lbl)
             else:
                 lbl = _make_wrap_label()
                 # NOT selectable — selectable labels swallow touch swipes
@@ -2650,6 +2839,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_default_size(w, h)
         self.app = app
         self.settings = load_settings()
+        # Apply the inline-image toggle to the module global the renderer reads.
+        global _RENDER_IMAGES
+        try:
+            _RENDER_IMAGES = bool(self.settings.get("chat_render_images", True))
+        except Exception:
+            _RENDER_IMAGES = True
         # Build one backend per registered cloud provider.  Groq keeps its
         # library-backed backend; everything else rides the generic
         # OpenAI-compatible backend.  Keyed by provider id for the router.
@@ -3715,6 +3910,7 @@ class MainWindow(Adw.ApplicationWindow):
     # instead of a bare tool name or a flat "working…".
     _TOOL_STATUS = {
         "web_search":       "searching the web",
+        "image_search":     "finding images",
         "web_read":         "reading a page",
         "web_verify":       "cross-checking sources",
         "github":           "browsing GitHub",
@@ -4483,6 +4679,10 @@ class MainWindow(Adw.ApplicationWindow):
                 lambda: tool_web_read(
                     a.get("url", ""),
                     _safe_int(a.get("max_chars", 6000), 6000))),
+            "image_search":      lambda a: self._tool_simple(
+                lambda: tool_image_search(
+                    a.get("query", a.get("q", "")),
+                    _safe_int(a.get("max_results", 4), 4))),
 
             # ── OSINT (read-only: simple, public sources only) ──
             # Footprint / username discovery across public profile sites and

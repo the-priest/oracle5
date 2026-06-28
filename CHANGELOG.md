@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.3.0 — Kali can show pictures in chat
+
+Kali can now **display images inline** in the conversation, not just link them.
+
+- **Inline image rendering.** Any image the model puts in a reply as markdown —
+  `![description](url)` — is fetched and rendered as a real picture in the chat
+  (http/https/file/local-path). Download and decode happen off the UI thread,
+  the bytes are size-capped (~12 MB), the picture is scaled to fit the bubble,
+  and any failure degrades to a small caption with the link, so a dead URL can
+  never break the chat. New `ImageWidget` + image-block detection in the
+  renderer.
+- **`image_search` tool.** Searches the web for images (DuckDuckGo, no API key)
+  and returns direct image URLs for the model to embed. Ask "show me X."
+- **OSINT profile photos.** `osint_username` now extracts each found profile's
+  `og:image`/`twitter:image`, so a found account can be shown with its avatar.
+- **Privacy toggle.** `chat_render_images` (default on) — turn it off and image
+  markdown is shown as a tappable link instead, so the chat never reaches out to
+  an image host. For OPSEC-conscious use.
+- **Tests:** 59 (was 55) — adds `og:image` extraction (incl. protocol-relative
+  and relative→absolute URLs) and image-search input handling. *(The live
+  DuckDuckGo image fetch is verified on a real machine, not in the offline
+  suite.)*
+
+---
+
 ## v3.2.0 — Evidence ledger, MCP client, smarter recall, Nuclei + self-reflection
 
 Four capability additions (no local-model support, by request).

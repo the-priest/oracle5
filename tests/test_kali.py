@@ -817,5 +817,35 @@ class TestMcpSafetyScreen(unittest.TestCase):
             self.mcp._arguments_are_catastrophic({"url": "https://x", "n": 5}))
 
 
+class TestImages(unittest.TestCase):
+    """Profile-pic extraction and image-search input handling (the offline
+    parts; the live DuckDuckGo fetch is verified on a real machine)."""
+
+    def test_og_image_extraction(self):
+        html = ('<meta property="og:image" '
+                'content="https://cdn.site.com/avatar.jpg">')
+        self.assertEqual(kali_core._extract_og_image(html, "https://site.com/u"),
+                         "https://cdn.site.com/avatar.jpg")
+
+    def test_og_image_protocol_relative_and_absolute(self):
+        self.assertEqual(
+            kali_core._extract_og_image(
+                '<meta name="twitter:image" content="//cdn.x.com/p.png">',
+                "https://x.com"),
+            "https://cdn.x.com/p.png")
+        self.assertEqual(
+            kali_core._extract_og_image(
+                '<meta property="og:image" content="/rel/p.png">',
+                "https://site.com/u/bob"),
+            "https://site.com/rel/p.png")
+
+    def test_og_image_absent(self):
+        self.assertEqual(kali_core._extract_og_image("<html>none</html>"), "")
+
+    def test_image_search_empty_query(self):
+        r = kali_core.tool_image_search("")
+        self.assertFalse(r["ok"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
