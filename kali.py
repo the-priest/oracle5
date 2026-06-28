@@ -76,7 +76,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "3.3.1"
+VERSION = "3.4.0"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -105,7 +105,7 @@ HISTORY_TRIM_HEAD_CHARS = 600
 CSS = b"""
 /* =====================================================================
    KALI THEME - modelled on the official Kali Linux desktop palette:
-   near-black surfaces, the Kali dragon-blue accent (#367bf0 / #4a9eff),
+   near-black surfaces, the Kali dragon-blue accent (#15a838 / #2ee65f),
    red for danger, monospace for headers and machine output.  Built to
    read like a first-party Kali tool, not a pastel toy.
    GTK CSS has no variables across rules, so the palette is inlined.
@@ -113,7 +113,7 @@ CSS = b"""
    Palette:
      bg base    #0d0f12   surfaces  #14171c / #1b1f26   line  #262b33
      text       #d6dbe2   dim       #7d8794
-     accent     #367bf0   accent-hi #4a9eff   accent-dim rgba(54,123,240,.15)
+     accent     #15a838   accent-hi #2ee65f   accent-dim rgba(46, 230, 95,.15)
      ok/green   #2ecc71   warn      #f0a500   danger #e5484d
    ===================================================================== */
 
@@ -124,8 +124,8 @@ CSS = b"""
    the user's Plasma accent - which is exactly what made the UI look
    inconsistent.  Retint them ALL to the Kali palette in one place. */
 
-@define-color accent_color              #4a9eff;
-@define-color accent_bg_color           #367bf0;
+@define-color accent_color              #2ee65f;
+@define-color accent_bg_color           #15a838;
 @define-color accent_fg_color           #ffffff;
 
 @define-color destructive_color         #e5484d;
@@ -187,7 +187,7 @@ headerbar {
     font-size: 28px;
     font-weight: 900;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    color: #4a9eff;
+    color: #2ee65f;
     letter-spacing: 1px;
 }
 .app-subtitle {
@@ -221,7 +221,7 @@ headerbar {
 }
 .chat-row.selected, .chat-row:selected {
     background-color: #1b1f26;
-    border-left: 3px solid #367bf0;
+    border-left: 3px solid #15a838;
 }
 .chat-row .title-line {
     color: #d6dbe2;
@@ -234,7 +234,7 @@ headerbar {
     margin-top: 4px;
 }
 .chat-row .pin-icon {
-    color: #4a9eff;
+    color: #2ee65f;
     font-size: 17px;
 }
 
@@ -340,10 +340,10 @@ headerbar {
     color: #d6dbe2;
 }
 .avatar-kali {
-    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    background: linear-gradient(135deg, #8b0010, #ff2d3a);
     color: #0d0f12;
-    border: 1px solid #7dc0ff;
-    box-shadow: 0 0 8px rgba(54, 123, 240, 0.5);
+    border: 1px solid #ff5566;
+    box-shadow: 0 0 10px rgba(255, 45, 58, 0.55);
 }
 
 .role-label {
@@ -355,8 +355,8 @@ headerbar {
     text-transform: uppercase;
     margin: 0 0 5px 0;
 }
-.role-label.user { color: #7d8794; }
-.role-label.kali { color: #4a9eff; }
+.role-label.user { color: #2ee65f; }
+.role-label.kali { color: #ff3a47; }
 
 /* ===== Code blocks ===== */
 
@@ -391,7 +391,7 @@ headerbar {
 }
 .code-block textview {
     background-color: transparent;
-    color: #cfe3ff;
+    color: #d6ffdf;
     font-family: 'JetBrains Mono', 'Fira Code', 'DejaVu Sans Mono', monospace;
     font-size: 22px;
     padding: 16px 18px;
@@ -412,13 +412,13 @@ headerbar {
 .status-pill.online   { background-color: #2ecc71; color: #0d0f12; }
 .status-pill.offline  { background-color: #262b33; color: #d6dbe2; }
 .status-pill.error    { background-color: #e5484d; color: #ffffff; }
-.status-pill.groq     { background: linear-gradient(135deg, #367bf0, #4a9eff);
+.status-pill.groq     { background: linear-gradient(135deg, #15a838, #2ee65f);
                         color: #ffffff; }
 
 /* ===== Settings ===== */
 
 .settings-section-title {
-    color: #4a9eff;
+    color: #2ee65f;
     font-weight: bold;
     font-size: 17px;
     font-family: 'JetBrains Mono', monospace;
@@ -431,7 +431,7 @@ headerbar {
 
 .confirm-cmd {
     background-color: #0a0c0f;
-    color: #4a9eff;
+    color: #2ee65f;
     font-family: 'JetBrains Mono', monospace;
     font-size: 20px;
     padding: 16px;
@@ -449,7 +449,7 @@ scrollbar slider {
     min-height: 50px;
 }
 scrollbar slider:hover { background-color: #3d4651; }
-scrollbar slider:active { background-color: #367bf0; }
+scrollbar slider:active { background-color: #15a838; }
 
 /* ===== Entry ===== */
 
@@ -461,7 +461,7 @@ entry {
     border: 1px solid #262b33;
     font-size: 20px;
 }
-entry:focus-within { outline: 2px solid #367bf0; border-color: #367bf0; }
+entry:focus-within { outline: 2px solid #15a838; border-color: #15a838; }
 
 passwordentry {
     background-color: #1b1f26;
@@ -485,8 +485,8 @@ passwordentry {
 }
 .quick-chip:hover {
     background-color: #1f2530;
-    color: #4a9eff;
-    border-color: #367bf0;
+    color: #2ee65f;
+    border-color: #15a838;
 }
 
 /* ===== Terminal log panel ===== */
@@ -504,7 +504,7 @@ passwordentry {
 }
 
 .terminal-panel-title {
-    color: #4a9eff;
+    color: #2ee65f;
     font-family: 'JetBrains Mono', monospace;
     font-size: 14px;
     font-weight: bold;
@@ -529,12 +529,12 @@ passwordentry {
 }
 .terminal-toggle-btn:hover {
     background-color: #1b1f26;
-    color: #4a9eff;
+    color: #2ee65f;
 }
 .terminal-toggle-btn.active {
     background-color: #0a0c0f;
-    color: #4a9eff;
-    border: 1px solid #367bf0;
+    color: #2ee65f;
+    border: 1px solid #15a838;
 }
 
 /* ===== Banner for watcher events ===== */
@@ -550,19 +550,19 @@ passwordentry {
 }
 
 .working-row {
-    background-color: rgba(54, 123, 240, 0.15);
+    background-color: rgba(46, 230, 95, 0.15);
     border-radius: 8px;
     padding: 10px 22px;
 }
 .working-label {
-    color: #4a9eff;
+    color: #2ee65f;
     font-size: 18px;
     font-style: italic;
     font-weight: bold;
     letter-spacing: 0.5px;
 }
 .working-spinner {
-    color: #4a9eff;
+    color: #2ee65f;
     min-width: 24px;
     min-height: 24px;
 }
@@ -572,7 +572,7 @@ passwordentry {
 .cmd-card {
     background-color: #14171c;
     border: 1px solid #262b33;
-    border-left: 4px solid #367bf0;
+    border-left: 4px solid #15a838;
     border-radius: 8px;
     padding: 14px 16px;
     margin: 8px 0;
@@ -581,7 +581,7 @@ passwordentry {
     margin-bottom: 8px;
 }
 .cmd-card-title {
-    color: #4a9eff;
+    color: #2ee65f;
     font-weight: bold;
     font-size: 15px;
     font-family: 'JetBrains Mono', monospace;
@@ -600,7 +600,7 @@ passwordentry {
 .risk-badge.high   { background-color: #e5484d; color: #ffffff; }
 .cmd-text {
     background-color: #0a0c0f;
-    color: #4a9eff;
+    color: #2ee65f;
     font-family: 'JetBrains Mono', monospace;
     font-size: 18px;
     padding: 12px 14px;
@@ -623,14 +623,14 @@ passwordentry {
     margin: 6px 0;
 }
 .cmd-run-btn {
-    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    background: linear-gradient(135deg, #15a838, #2ee65f);
     color: #ffffff;
     border-radius: 6px;
     padding: 10px 22px;
     font-weight: bold;
     font-size: 16px;
 }
-.cmd-run-btn:hover { background: linear-gradient(135deg, #4a9eff, #367bf0); }
+.cmd-run-btn:hover { background: linear-gradient(135deg, #2ee65f, #15a838); }
 .cmd-run-btn:disabled { background: #262b33; color: #5a626d; }
 .cmd-copy-btn {
     background-color: #1b1f26;
@@ -640,7 +640,7 @@ passwordentry {
     font-size: 16px;
     border: 1px solid #262b33;
 }
-.cmd-copy-btn:hover { background-color: #1f2530; border-color: #367bf0; }
+.cmd-copy-btn:hover { background-color: #1f2530; border-color: #15a838; }
 
 /* ===== libadwaita rows / settings / dialogs =====
    Force the Kali surfaces on the built-in widgets so Settings and
@@ -668,7 +668,7 @@ switch {
     border-radius: 14px;
 }
 switch:checked {
-    background-color: #367bf0;
+    background-color: #15a838;
 }
 switch > slider {
     background-color: #d6dbe2;
@@ -683,7 +683,7 @@ spinbutton, spinbutton entry {
 }
 spinbutton button {
     background-color: #1b1f26;
-    color: #4a9eff;
+    color: #2ee65f;
 }
 spinbutton button:hover { background-color: #262b33; }
 
@@ -703,7 +703,7 @@ popover > contents, popover > arrow {
     border: 1px solid #262b33;
 }
 popover row:selected, dropdown listview > row:selected {
-    background-color: #367bf0;
+    background-color: #15a838;
     color: #ffffff;
 }
 
@@ -719,7 +719,7 @@ window.dialog, dialog, .messagedialog, .dialog-content {
     margin: 4px;
 }
 .messagedialog .response-area button.suggested-action {
-    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    background: linear-gradient(135deg, #15a838, #2ee65f);
     color: #ffffff;
 }
 .messagedialog .response-area button.destructive-action {
@@ -734,7 +734,7 @@ window.dialog, dialog, .messagedialog, .dialog-content {
     border-radius: 6px;
     border: 1px solid #262b33;
 }
-searchentry:focus-within { border-color: #367bf0; }
+searchentry:focus-within { border-color: #15a838; }
 
 /* Menu button / popover menu */
 menubutton > button, .menu-button {
@@ -752,11 +752,11 @@ button {
     border: 1px solid #262b33;
     border-radius: 6px;
 }
-button:hover { background-color: #1f2530; border-color: #367bf0; }
+button:hover { background-color: #1f2530; border-color: #15a838; }
 button.flat { background-color: transparent; border: none; }
 button.flat:hover { background-color: #1b1f26; }
 button.suggested-action {
-    background: linear-gradient(135deg, #367bf0, #4a9eff);
+    background: linear-gradient(135deg, #15a838, #2ee65f);
     color: #ffffff;
     border: none;
 }
@@ -764,12 +764,20 @@ button.suggested-action {
 /* Dragon avatar tile in chat */
 .avatar-dragon {
     border-radius: 8px;
-    background-color: #0d0f12;
-    box-shadow: 0 0 8px rgba(54, 123, 240, 0.45);
+    background-color: #000000;
+    box-shadow: 0 0 10px rgba(255, 45, 58, 0.5), 0 0 4px rgba(46, 230, 95, 0.4);
 }
+/* let the penguin watermark show through the chat */
+.chat-scroll,
+.chat-scroll > viewport,
+.chat-scroll viewport {
+    background-color: transparent;
+    background: transparent;
+}
+.chat-watermark { background: transparent; }
 
 /* Links (e.g. 'Get an API key') in Kali blue */
-link, button.link, *:link { color: #4a9eff; }
+link, button.link, *:link { color: #2ee65f; }
 
 /* Voice: mic button + active recording state */
 .mic-button {
@@ -778,7 +786,7 @@ link, button.link, *:link { color: #4a9eff; }
     border: 1px solid #262b33;
     border-radius: 6px;
 }
-.mic-button:hover { background-color: #1f2530; border-color: #367bf0; }
+.mic-button:hover { background-color: #1f2530; border-color: #15a838; }
 .mic-recording {
     background: linear-gradient(135deg, #e5484d, #ff5c61);
     color: #ffffff;
@@ -801,8 +809,8 @@ link, button.link, *:link { color: #4a9eff; }
 }
 .msg-speak-btn:hover { background-color: #1b1f26; color: #d6dbe2; }
 .msg-speak-btn.speaking {
-    color: #4a9eff;
-    background-color: rgba(54, 123, 240, 0.15);
+    color: #2ee65f;
+    background-color: rgba(46, 230, 95, 0.15);
 }
 
 /* =====================================================================
@@ -854,7 +862,7 @@ button:focus-visible {
     outline-offset: 1px;
 }
 button.suggested-action {
-    box-shadow: 0 2px 8px rgba(54,123,240,0.35),
+    box-shadow: 0 2px 8px rgba(46, 230, 95,0.35),
                 inset 0 1px 0 rgba(255,255,255,0.15);
 }
 button.suggested-action:hover {
@@ -864,7 +872,7 @@ button.suggested-action:hover {
 
 /* ---- Primary action buttons (Run / Apply) ---- */
 .cmd-run-btn {
-    box-shadow: 0 2px 10px rgba(54,123,240,0.40),
+    box-shadow: 0 2px 10px rgba(46, 230, 95,0.40),
                 inset 0 1px 0 rgba(255,255,255,0.18);
     padding: 11px 26px;
     letter-spacing: 0.2px;
@@ -901,12 +909,12 @@ entry {
 }
 entry:focus-within {
     box-shadow: inset 0 1px 3px rgba(0,0,0,0.35),
-                0 0 0 3px rgba(54,123,240,0.22);
+                0 0 0 3px rgba(46, 230, 95,0.22);
 }
 
 /* ---- Message bubbles: quiet depth so they sit above the canvas ---- */
 .msg-user {
-    box-shadow: 0 2px 10px rgba(54,123,240,0.18);
+    box-shadow: 0 2px 10px rgba(46, 230, 95,0.18);
 }
 .msg-assistant {
     box-shadow: 0 2px 10px rgba(0,0,0,0.28);
@@ -917,9 +925,9 @@ entry:focus-within {
     border-left: 3px solid transparent;
 }
 .chat-row.selected, .chat-row:selected {
-    border-left: 3px solid #4a9eff;
+    border-left: 3px solid #2ee65f;
     background-image: linear-gradient(90deg,
-                      rgba(54,123,240,0.16), rgba(54,123,240,0.0));
+                      rgba(46, 230, 95,0.16), rgba(46, 230, 95,0.0));
 }
 
 /* ---- Quick chips: pill polish ---- */
@@ -930,7 +938,7 @@ entry:focus-within {
     padding: 7px 15px;
 }
 .quick-chip:hover {
-    box-shadow: 0 2px 8px rgba(54,123,240,0.25);
+    box-shadow: 0 2px 8px rgba(46, 230, 95,0.25);
 }
 
 /* ---- Mic recording: gentle pulse-ready glow already set; deepen it ---- */
@@ -942,8 +950,8 @@ entry:focus-within {
 /* ---- Working row: a soft active surface ---- */
 .working-row {
     background-image: linear-gradient(90deg,
-                      rgba(54,123,240,0.10), rgba(54,123,240,0.0));
-    box-shadow: inset 0 0 0 1px rgba(54,123,240,0.15);
+                      rgba(46, 230, 95,0.10), rgba(46, 230, 95,0.0));
+    box-shadow: inset 0 0 0 1px rgba(46, 230, 95,0.15);
 }
 
 /* ---- Slim, themed scrollbars ---- */
@@ -955,7 +963,7 @@ scrollbar slider {
     min-height: 7px;
 }
 scrollbar slider:hover { background-color: #3a4250; }
-scrollbar slider:active { background-color: #4a9eff; }
+scrollbar slider:active { background-color: #2ee65f; }
 
 /* ---- Boxed settings lists: a touch of depth ---- */
 list.boxed-list {
@@ -1014,7 +1022,7 @@ def text_to_pango(text: str) -> str:
     safe = ITALIC_RE.sub(r"<i>\1</i>", safe)
     safe = INLINE_CODE_RE.sub(
         r'<span font_family="JetBrains Mono" '
-        r'background="#0a0c0f" foreground="#cfe3ff"> \1 </span>',
+        r'background="#0a0c0f" foreground="#d6ffdf"> \1 </span>',
         safe)
     return safe
 
@@ -1495,6 +1503,23 @@ def _find_dragon_svg() -> Optional[str]:
 
 # Resolved once at import; None if the emblem isn't on disk.
 _DRAGON_SVG_PATH = _find_dragon_svg()
+
+
+def _find_watermark_svg() -> Optional[str]:
+    """Locate the transparent penguin watermark for the chat background.
+    Falls back to the emblem SVG, then None (no watermark)."""
+    candidates = [
+        os.path.expanduser("~/.local/share/kali/kali-watermark.svg"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "kali-watermark.svg"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return _DRAGON_SVG_PATH
+
+
+_WATERMARK_SVG_PATH = _find_watermark_svg()
 
 
 def _svg_texture(path: str, px: int):
@@ -3168,7 +3193,22 @@ class MainWindow(Adw.ApplicationWindow):
         self.msg_box.set_margin_start(8)
         self.msg_box.set_margin_end(8)
         self.msg_scroll.set_child(self.msg_box)
-        main.append(self.msg_scroll)
+        self.msg_scroll.add_css_class("chat-scroll")
+
+        # A faint menacing-penguin watermark sits BEHIND the conversation.
+        # Gtk.Overlay draws its main child at the back and overlays on top, so
+        # the watermark is the main child and the (transparent) scroller is the
+        # overlay — messages render over the penguin.  Falls back to just the
+        # scroller if the watermark SVG isn't on disk.
+        wm = self._build_chat_watermark()
+        if wm is not None:
+            chat_overlay = Gtk.Overlay()
+            chat_overlay.set_vexpand(True)
+            chat_overlay.set_child(wm)
+            chat_overlay.add_overlay(self.msg_scroll)
+            main.append(chat_overlay)
+        else:
+            main.append(self.msg_scroll)
 
         main.append(self._build_input_area())
 
@@ -3179,6 +3219,34 @@ class MainWindow(Adw.ApplicationWindow):
         main.append(self.terminal_panel)
 
         return main
+
+    def _build_chat_watermark(self):
+        """A large, faint menacing-penguin watermark for behind the chat.
+        Non-interactive (never grabs touch/clicks), scaled to fit, low opacity
+        so it sets the mood without fighting the text.  Returns None if the
+        watermark art isn't on disk, in which case the chat has no watermark."""
+        if not _WATERMARK_SVG_PATH:
+            return None
+        try:
+            tex = _svg_texture(_WATERMARK_SVG_PATH, 720)
+            if tex is None:
+                return None
+            pic = Gtk.Picture.new_for_paintable(tex)
+            pic.set_can_target(False)
+            pic.set_hexpand(True)
+            pic.set_vexpand(True)
+            pic.set_halign(Gtk.Align.FILL)
+            pic.set_valign(Gtk.Align.FILL)
+            pic.set_opacity(0.085)
+            try:
+                pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+            except Exception:
+                pass
+            pic.add_css_class("chat-watermark")
+            return pic
+        except Exception as e:
+            log(f"watermark build failed: {e}")
+            return None
 
     def _build_terminal_panel(self):
         """Live terminal output panel — shows exactly what tools are doing."""
@@ -3226,7 +3294,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.terminal_log_buf = self.terminal_log_view.get_buffer()
 
         # Colour tags
-        self.terminal_log_buf.create_tag("cmd",    foreground="#4a9eff", weight=700)
+        self.terminal_log_buf.create_tag("cmd",    foreground="#2ee65f", weight=700)
         self.terminal_log_buf.create_tag("stdout", foreground="#5aa7ff")
         self.terminal_log_buf.create_tag("stderr", foreground="#e5484d")
         self.terminal_log_buf.create_tag("info",   foreground="#89b4fa")

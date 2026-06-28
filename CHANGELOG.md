@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.4.0 — Menacing makeover (red/green/black + fire penguin)
+
+A visual overhaul of the look.
+
+- **New menacing fire-penguin emblem.** Replaced the muted traced penguin with
+  an angular black penguin with glowing red eyes, a green plasma rim, a sharp
+  beak, and red flames (with green plasma licks) rising around it. Used as the
+  app/taskbar icon and the chat avatar.
+- **Penguin watermark behind the chat.** A large, faint version of the penguin
+  now sits behind the conversation (a transparent `kali-watermark.svg`, drawn
+  via a `Gtk.Overlay` so messages render over it). Non-interactive and low
+  opacity, so it sets the mood without fighting the text.
+- **Red / green / black theme.** Swapped the old blue accent for toxic green as
+  the primary accent (links, focus, online, the operator label) and red for
+  Kali's identity — the Kali label, the emblem glow, alerts/destructive — tying
+  the UI to the penguin's red eyes. All backgrounds stay black.
+- **Plumbing:** `install.sh` now ships `kali-watermark.svg` and places it (and
+  the emblem) in the install dir so the watermark works on a fresh install.
+
+---
+
 ## v3.3.1 — Reliable image search + sharper self-awareness
 
 Fixes a real-world failure where showing a picture fell apart, and tightens how
