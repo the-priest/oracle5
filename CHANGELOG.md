@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.7.1 — Anthropic / Claude fixed
+
+- **Claude works now.** Three causes of the HTTP 404: the request was missing
+  Anthropic's required `anthropic-version` header (now sent), the model chain
+  used `-latest` aliases that the OpenAI-compatible endpoint doesn't resolve
+  (now dated model IDs), and a bug in the fallback made a bad model id dead-end
+  instead of trying the rest of the chain (now it walks the chain and self-heals
+  via the live model list).
+- **Claude line-up:** Sonnet 3.5 (safe default), Claude 4 Sonnet, Claude 4 Opus
+  (most capable), Claude 3.5 Haiku, and Claude 3 Haiku (cheapest — close to
+  DeepSeek pricing). A stale `-latest` selection auto-migrates to a valid model.
+- Clearer provider error messages that point at the key / model switcher.
+
+---
+
 ## v3.7.0 — Browser fixed, composer & chat redesign
 
 - **Browser tools actually work now.** Playwright's sync API is thread-bound, but

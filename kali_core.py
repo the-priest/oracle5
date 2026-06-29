@@ -134,10 +134,11 @@ OPENAI_CHAIN = [
 ]
 
 ANTHROPIC_CHAIN = [
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-3-5-sonnet-latest",
-    "claude-3-5-haiku-latest",
+    "claude-3-5-sonnet-20241022",   # proven, balanced — safe default
+    "claude-sonnet-4-20250514",     # Claude 4 Sonnet (best all-round)
+    "claude-opus-4-20250514",       # Claude 4 Opus (most capable, priciest)
+    "claude-3-5-haiku-20241022",    # cheapest Claude — closest to DeepSeek
+    "claude-3-haiku-20240307",      # older, cheapest of all
 ]
 
 GOOGLE_CHAIN = [
@@ -196,7 +197,8 @@ PROVIDERS: List[ProviderSpec] = [
               "Key at console.anthropic.com.",
         base_url="https://api.anthropic.com/v1",
         chain=ANTHROPIC_CHAIN,
-        key_url="https://console.anthropic.com/settings/keys"),
+        key_url="https://console.anthropic.com/settings/keys",
+        extra_headers={"anthropic-version": "2023-06-01"}),
     ProviderSpec(
         key="google", label="Google AI Studio",
         blurb="Gemini models. Free key at aistudio.google.com.",
@@ -399,6 +401,10 @@ def _migrate_settings(merged: Dict[str, Any], raw: Dict[str, Any]) -> None:
     # primary, SiliconFlow.
     if merged.get("active_provider") not in PROVIDERS_BY_KEY:
         merged["active_provider"] = "siliconflow"
+    # The old Anthropic "-latest" aliases 404 on the OpenAI-compat endpoint;
+    # if an upgrade left one selected, move it to a valid dated model.
+    if str(merged.get("anthropic_model", "")).endswith("-latest"):
+        merged["anthropic_model"] = ANTHROPIC_CHAIN[0]
 
 
 def save_settings(settings: Dict[str, Any]) -> None:
@@ -754,21 +760,27 @@ class OpenAICompatBackend:
                 # 400/404 with no auth hint → maybe a stale model id.  Pull
                 # the live catalogue ONCE and retry with real models.
                 if e.code in (404, 400) and not recovered_live:
+                    # A 404/400 with no auth hint usually means a stale/unknown
+                    # model id.  Pull the live catalogue ONCE to augment the
+                    # chain, then CONTINUE trying the remaining models in
+                    # `order` (the curated dated chain) — don't dead-end here
+                    # just because the live list was empty or already known.
                     recovered_live = True
-                    live = self.list_models_live()
+                    try:
+                        live = self.list_models_live()
+                    except Exception:
+                        live = []
                     new = [m for m in live if m not in order]
                     if new:
                         log(f"{self.name} {attempt_model} -> {e.code}; "
                             f"recovered {len(new)} live models")
                         order.extend(new)
-                        continue
-                    # No live models came back either — almost always the
-                    # key is bad/empty.  Stop, don't churn the chain.
-                    on_error(f"{self.name}: request rejected (HTTP {e.code}) "
-                             f"and no models could be listed — the API key is "
-                             f"probably missing or invalid. Check Settings → "
-                             f"Backends.")
-                    return
+                    continue
+                # A later 404/400 (after we already tried recovery) → just move
+                # on to the next model in the chain.
+                if e.code in (404, 400):
+                    log(f"{self.name} {attempt_model} -> {e.code}, next model")
+                    continue
 
                 # 429 = rate limit on THIS model → genuinely worth the next.
                 if e.code == 429:
@@ -795,10 +807,12 @@ class OpenAICompatBackend:
                 on_error(f"{self.name}: {type(e).__name__}: {str(e)[:200]}")
                 return
 
-        # We only reach here if every model in the chain returned 429/5xx.
-        on_error(f"{self.name}: all models are rate-limited or unavailable "
-                 f"right now ({last_err}). Try again shortly or switch "
-                 f"provider in Settings.")
+        # Reached only if every model in the chain failed (rate-limited, or
+        # 404/400 unknown-model after recovery).  Surface the real last error
+        # so a bad model id or key is obvious.
+        on_error(f"{self.name}: couldn't get a response from any model "
+                 f"({last_err}). If you just switched provider, check the API "
+                 f"key and pick a model in the composer's model switcher.")
 
 
 class BackendRouter:
