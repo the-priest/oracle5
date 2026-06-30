@@ -274,6 +274,8 @@ DEFAULT_SETTINGS = {
     "tts_voice":        "",             # path to a Piper .onnx (blank = auto-find)
     "tts_voice_espeak": "",             # espeak voice id, e.g. "en-gb" (blank = default)
     "tts_rate":         1.15,           # 0.5 (slow) .. 2.0 (fast); 1.0 = normal
+    "tts_sentence_pause": 0.0,          # seconds of silence between sentences;
+                                        # 0 = no long stop after periods
     "voice_autosend":   True,           # auto-send after a voice message transcribes
     "stt_model":        "whisper-large-v3-turbo",
     "stt_language":     "",             # ISO-639-1 hint (blank = auto-detect)

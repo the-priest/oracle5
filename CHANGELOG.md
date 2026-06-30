@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.8.1 — Voice de-paused, UI cleanup, identity fixed
+
+- **Voice no longer drags with long pauses.** Three fixes: newlines and blank
+  lines (and code blocks) now collapse to a single flowing line instead of
+  becoming dead air; Piper's between-sentence silence is detected and set to ~0
+  so there's no long stop after every period (espeak gets `-g 0`); and replies
+  are spoken as fewer, larger utterances so there are fewer gaps. Tunable via a
+  new tts_sentence_pause setting (default 0).
+- **She knows what she is.** Kali no longer roleplays being your operating
+  system — she's the assistant (JARVIS / your Skynet) running as an app ON your
+  machine, with real hands on it through her tools, loyal to you.
+- **Header slimmed.** Removed the model + agent line from the top (the model
+  shows in the composer switcher, agent state shows as the green toggle), and
+  the title bar is thinner.
+- **Composer input is a bubble now** so it reads as a field instead of bleeding
+  into the bottom edge; it highlights green while focused.
+- **Kali's message bubbles are translucent red** — see-through, contrasting your
+  translucent green.
+- **Log button moved** in next to the other toolbar buttons.
+- **Removed the chat search box.**
+
+---
+
 ## v3.8.0 — Two providers, extensions panel, MCP toggle, risk-based confirm
 
 - **Providers trimmed to Groq + SiliconFlow.** OpenAI, Anthropic and Google

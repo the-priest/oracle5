@@ -77,7 +77,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "3.8.0"
+VERSION = "3.8.1"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -215,9 +215,22 @@ headerbar {
 }
 
 .chat-title {
-    font-size: 24px;
-    font-weight: 700;
+    font-size: 16px;
+    font-weight: 600;
     color: #d6dbe2;
+}
+/* Composer input as a rounded bubble so it reads as a contained field
+   instead of bleeding into the bottom edge. */
+.input-frame {
+    background-color: #14181d;
+    border: 1px solid #232a32;
+    border-radius: 20px;
+    padding: 4px 8px;
+    margin-bottom: 8px;
+}
+.input-frame:focus-within {
+    border-color: #2ee65f;
+    background-color: #161b21;
 }
 .chat-subtitle {
     font-size: 16px;
@@ -303,16 +316,16 @@ headerbar {
     border: 1px solid rgba(46, 230, 95, 0.22);
 }
 
-/* Assistant: left-aligned, a solid visible bubble (was transparent) */
+/* Assistant: left-aligned, translucent RED bubble (contrast to user green) */
 .msg-assistant {
-    background-color: #161a20;
-    color: #e8ebef;
+    background-color: rgba(255, 58, 71, 0.09);
+    color: #f1eaea;
     padding: 16px 20px;
     margin: 8px 60px 8px 12px;
     font-size: 30px;
     line-height: 1.55;
     border-radius: 12px 12px 12px 4px;
-    border: 1px solid #242c34;
+    border: 1px solid rgba(255, 58, 71, 0.26);
 }
 
 /* Compact tool indicator (replaces visible JSON dump) */
@@ -3499,18 +3512,7 @@ class MainWindow(Adw.ApplicationWindow):
         sb_header.pack_end(new_btn)
         sb.append(sb_header)
 
-        # Search
-        sw_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        sw_box.set_margin_start(12)
-        sw_box.set_margin_end(12)
-        sw_box.set_margin_top(8)
-        sw_box.set_margin_bottom(8)
-        self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_placeholder_text("search chats…")
-        self.search_entry.set_hexpand(True)
-        self.search_entry.connect("search-changed", self._on_search)
-        sw_box.append(self.search_entry)
-        sb.append(sw_box)
+        # (Chat search removed by request.)
 
         # List
         self.chat_listbox = Gtk.ListBox()
@@ -3549,10 +3551,10 @@ class MainWindow(Adw.ApplicationWindow):
                                          spacing=0)
         self.chat_title_lbl = Gtk.Label(label="New chat", xalign=0.5)
         self.chat_title_lbl.add_css_class("chat-title")
+        # Subtitle label kept for code that references it, but never shown.
         self.chat_subtitle_lbl = Gtk.Label(label="", xalign=0.5)
         self.chat_subtitle_lbl.add_css_class("chat-subtitle")
         self.title_widget_box.append(self.chat_title_lbl)
-        self.title_widget_box.append(self.chat_subtitle_lbl)
         hb.set_title_widget(self.title_widget_box)
 
         # (Provider + online status used to live here as pills; the operator
@@ -3897,6 +3899,14 @@ class MainWindow(Adw.ApplicationWindow):
             self.tts_toggle.connect("toggled", self._on_tts_toggled)
             actions.append(self.tts_toggle)
 
+        # Log toggle sits right alongside the other toolbar buttons.
+        self.terminal_toggle_btn = Gtk.Button.new_from_icon_name(
+            "utilities-terminal-symbolic")
+        self.terminal_toggle_btn.add_css_class("icon-button")
+        self.terminal_toggle_btn.set_tooltip_text("Show/hide live terminal log")
+        self.terminal_toggle_btn.connect("clicked", self._toggle_terminal_panel)
+        actions.append(self.terminal_toggle_btn)
+
         # The chips live in a horizontal scroller so a phone too narrow to fit
         # them all can't be forced wider than the screen — they scroll instead.
         actions.set_margin_start(0)
@@ -3914,13 +3924,6 @@ class MainWindow(Adw.ApplicationWindow):
         actions_row.set_margin_start(4)
         actions_row.set_margin_end(4)
         actions_row.append(chips_scroll)
-
-        # Terminal log toggle button — fixed on the right, outside the scroller.
-        self.terminal_toggle_btn = Gtk.Button(label="⌨ log")
-        self.terminal_toggle_btn.add_css_class("terminal-toggle-btn")
-        self.terminal_toggle_btn.set_tooltip_text("Show/hide live terminal log")
-        self.terminal_toggle_btn.connect("clicked", self._toggle_terminal_panel)
-        actions_row.append(self.terminal_toggle_btn)
 
         area.append(actions_row)
 
@@ -4149,12 +4152,11 @@ class MainWindow(Adw.ApplicationWindow):
         return
 
     def _refresh_subtitle(self):
-        bits = []
-        backend, model = self.router.pick()
-        bits.append(f"{backend.name}: {model.split('/')[-1]}")
-        if self.current_agent_mode:
-            bits.append("agent")
-        self.chat_subtitle_lbl.set_text("   ·   ".join(bits))
+        # Model + agent indicator removed from the header by request: the model
+        # is visible in the composer switcher, and agent state shows as the
+        # green-lit toggle.  Keep the label empty so the header stays slim.
+        if hasattr(self, "chat_subtitle_lbl") and self.chat_subtitle_lbl:
+            self.chat_subtitle_lbl.set_text("")
 
     # ── messages ────────────────────────────────────────────────
 

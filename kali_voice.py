@@ -168,19 +168,23 @@ def _clean_inline(line: str) -> str:
 
 
 def clean_for_speech(text: str) -> str:
-    """Full one-shot clean of a complete message for TTS."""
+    """Full one-shot clean of a complete message for TTS.  Everything collapses
+    to a single flowing line — newlines, blank lines and code blocks would each
+    otherwise become a long dead pause in the spoken output."""
     if not text:
         return ""
     s = _TOOL_TAG_RE.sub(" ", text)
     s = _TOOL_FRAG_RE.sub(" ", s)
-    s = _FENCE_RE.sub(" . ", s)           # whole code blocks -> a pause
+    s = _FENCE_RE.sub(" ", s)             # code blocks: drop, no pause
     s = _FENCE_OPEN_RE.sub(" ", s)        # dangling open fence
     out: List[str] = []
     for ln in s.split("\n"):
         c = _clean_inline(ln)
         if c:
             out.append(c)
-    joined = "\n".join(out)
+    joined = " ".join(out)                # SPACE, not newline — no para pauses
+    joined = re.sub(r"\s+", " ", joined)  # collapse every whitespace run
+    joined = re.sub(r"([.!?]){2,}", r"\1", joined)  # "..." -> "." (no stacked pause)
     return joined.strip()
 
 
@@ -262,7 +266,7 @@ def split_sentences(text: str) -> List[str]:
 
 
 def merge_for_speech(chunks: List[str], first_max: int = 90,
-                     target: int = 320) -> List[str]:
+                     target: int = 600) -> List[str]:
     """Merge sentence-chunks into fewer, larger utterances.
 
     Speaking each sentence as its own subprocess puts a spawn-latency GAP at
@@ -879,6 +883,8 @@ class TextToSpeech:
         self._piper_model: Optional[str] = None
         self._piper_modelflag = "--model"
         self._piper_outflag = "--output_file"
+        self._piper_silence_flag: Optional[str] = None  # set by probe if build
+                                                         # accepts --sentence_silence
         self._piper_probed = False           # probe lazily on first speak
         self._player: Optional[List[str]] = None
 
@@ -975,6 +981,8 @@ class TextToSpeech:
                 if ok:
                     self._piper_modelflag = mflag
                     self._piper_outflag = oflag
+                    self._piper_silence_flag = self._probe_silence_flag(
+                        cmd, model, mflag, oflag)
                     return True
                 _ = p
             except Exception as e:
@@ -985,6 +993,30 @@ class TextToSpeech:
                 except Exception:
                     pass
         return False
+
+    def _probe_silence_flag(self, cmd: List[str], model: str,
+                            mflag: str, oflag: str) -> Optional[str]:
+        """Find which --sentence_silence spelling this piper build accepts (so
+        we can set the inter-sentence pause to ~0 and kill the long stop at
+        every period).  Returns the working flag, or None if unsupported."""
+        for flag in ("--sentence_silence", "--sentence-silence"):
+            fd, wav = tempfile.mkstemp(prefix="kali_tts_sp_", suffix=".wav")
+            os.close(fd)
+            try:
+                full = (list(cmd) + [mflag, model, oflag, wav, flag, "0.0"])
+                subprocess.run(full, input=b"a. b.",
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=40)
+                if os.path.exists(wav) and os.path.getsize(wav) > 44:
+                    return flag
+            except Exception:
+                pass
+            finally:
+                try:
+                    os.remove(wav)
+                except Exception:
+                    pass
+        return None
 
     # ── status ──
     def available(self) -> bool:
@@ -1138,6 +1170,15 @@ class TextToSpeech:
             r = 1.0
         return max(0.5, min(2.0, r))
 
+    def _sentence_pause(self) -> float:
+        """Seconds of silence Piper inserts between sentences.  Default 0.0 —
+        no long stop after periods.  Tunable via tts_sentence_pause."""
+        try:
+            v = float(self.get_settings().get("tts_sentence_pause", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            v = 0.0
+        return max(0.0, min(1.0, v))
+
     def _speak_piper(self, gen: int, text: str) -> None:
         if gen != self._gen:
             return
@@ -1153,6 +1194,7 @@ class TextToSpeech:
                     self._speak_espeak(gen, text)
                 return
         length_scale = max(0.5, min(2.0, 1.0 / self._rate()))
+        text = re.sub(r"\s+", " ", text).strip()   # no stray newline pauses
         fd, wav = tempfile.mkstemp(prefix="kali_tts_", suffix=".wav")
         os.close(fd)
         try:
@@ -1161,6 +1203,10 @@ class TextToSpeech:
                 self._piper_outflag, wav]
             if abs(length_scale - 1.0) > 0.01:
                 cmd += ["--length_scale", str(round(length_scale, 2))]
+            if self._piper_silence_flag:
+                # ~0 silence between sentences = no long stop after periods.
+                pause = self._sentence_pause()
+                cmd += [self._piper_silence_flag, str(pause)]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
@@ -1197,7 +1243,9 @@ class TextToSpeech:
         s = self.get_settings()
         wpm = int(max(80, min(400, 175 * self._rate())))
         voice = (s.get("tts_voice_espeak") or "").strip()
-        cmd = [self._espeak, "-s", str(wpm)]
+        text = re.sub(r"\s+", " ", text).strip()   # no stray newline pauses
+        # -g 0 = no extra word gap; keeps espeak from dragging between words.
+        cmd = [self._espeak, "-s", str(wpm), "-g", "0"]
         if voice:
             cmd += ["-v", voice]
         cmd += ["--", text]
