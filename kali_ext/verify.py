@@ -217,6 +217,34 @@ def _overlap(a: set, b: set) -> float:
     return inter / max(1, min(len(a), len(b)))
 
 
+_ANCHOR_CVE_RE = re.compile(r"CVE-\d{4}-\d{3,7}", re.I)
+_ANCHOR_VER_RE = re.compile(r"\b\d+\.\d+(?:\.\d+)*\b")
+_ANCHOR_ACRO_RE = re.compile(r"\b[A-Z]{2,6}\d*\b")
+
+
+def _anchors(text: str) -> set:
+    """High-signal identifiers that pin down WHICH thing is being discussed:
+    CVE IDs, version/score numbers, short acronyms.  Two sources sharing these
+    corroborate each other even when their prose is worded completely
+    differently — which is exactly the CVE case prose-overlap scored too low."""
+    t = text[:6000]
+    out: set = set()
+    for m in _ANCHOR_CVE_RE.findall(t):
+        out.add(m.upper())
+    for m in _ANCHOR_VER_RE.findall(t):
+        out.add(m)
+    for m in _ANCHOR_ACRO_RE.findall(t):
+        if m not in _STOP_ACRONYMS:
+            out.add(m)
+    return out
+
+
+# Common acronyms that don't pin down a specific claim.
+_STOP_ACRONYMS = {"THE", "AND", "FOR", "WITH", "FROM", "THIS", "THAT", "HTTP",
+                  "HTTPS", "HTML", "JSON", "API", "URL", "PDF", "FAQ", "CEO",
+                  "USA", "UK", "EU", "AM", "PM", "GMT", "UTC"}
+
+
 # ═════════════════════════════════════════════════════════════════════
 # PUBLIC — verify(query, ...)
 # ═════════════════════════════════════════════════════════════════════
@@ -318,7 +346,7 @@ def verify(
             "url": url, "domain": dom, "tier": tier,
             "tier_label": _TIER_LABEL.get(tier, tier),
             "title": r.get("title", ""), "snippet": r.get("snippet", ""),
-            "excerpt": "", "salient": set(), "fetched": False,
+            "excerpt": "", "salient": set(), "anchors": set(), "fetched": False,
         }
         # Don't waste a fetch on satire; flag and move on.
         if tier == "satire":
@@ -330,6 +358,7 @@ def verify(
                 body = rr.get("text", "")
                 rec["excerpt"] = _best_excerpt(body, query)
                 rec["salient"] = _salient(body)
+                rec["anchors"] = _anchors(body)
                 rec["fetched"] = True
                 rec["read_via"] = rr.get("source", "")
         except Exception as e:
@@ -338,6 +367,7 @@ def verify(
             rec["excerpt"] = rec["snippet"] or "(no readable text)"
             if not rec["salient"]:
                 rec["salient"] = _salient(rec["snippet"])
+                rec["anchors"] = _anchors(rec["snippet"])
         return rec
 
     sources: List[Dict[str, Any]] = []
@@ -349,14 +379,18 @@ def verify(
         except Exception:
             sources = [_fetch(r) for r in picked]
 
-    # 4 — corroboration: average pairwise salient-token overlap among the
-    # sources we actually read.  High → they tell the same story.
+    # 4 — corroboration: per pair, the stronger of prose-token overlap and
+    # anchor agreement.  Anchor agreement catches sources that plainly describe
+    # the same CVE / version / figure in different words — prose overlap alone
+    # scored those far too low (the regreSSHion case: 4 sources agreeing, 0.18).
     read_src = [x for x in sources if x.get("fetched") and x["salient"]]
     pair_scores: List[float] = []
     for i in range(len(read_src)):
         for j in range(i + 1, len(read_src)):
-            pair_scores.append(_overlap(read_src[i]["salient"],
-                                        read_src[j]["salient"]))
+            prose = _overlap(read_src[i]["salient"], read_src[j]["salient"])
+            anchor = _overlap(read_src[i].get("anchors", set()),
+                              read_src[j].get("anchors", set()))
+            pair_scores.append(max(prose, anchor))
     corroboration = round(sum(pair_scores) / len(pair_scores), 2) \
         if pair_scores else 0.0
 

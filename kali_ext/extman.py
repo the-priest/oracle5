@@ -57,6 +57,23 @@ def _as_float(v: Any, default: float) -> float:
         return default
 
 
+def _mem_text(a: Dict[str, Any]) -> str:
+    """Build the memory text from whatever field the model used.  Models
+    reach for {value}, {content}, {fact} or a {key,value} pair as often as
+    {text}; accepting all of them stops valid memories being dropped as
+    'empty'."""
+    for k in ("text", "value", "content", "fact", "memory", "note", "info"):
+        v = a.get(k)
+        if v:
+            key = a.get("key") or a.get("name")
+            # a key + value pair becomes "key: value" for context
+            if key and k != "text":
+                return f"{key}: {v}".strip()
+            return str(v).strip()
+    key = a.get("key") or a.get("name")
+    return str(key).strip() if key else ""
+
+
 def _log(msg: str) -> None:
     try:
         S.ext_dir.mkdir(parents=True, exist_ok=True)
@@ -260,12 +277,13 @@ def extra_tools(host: Any) -> Dict[str, Callable[[Dict[str, Any]], str]]:
 
     if S.on("memory_enabled") and S.mem:
         out["memory_recall"] = lambda a: S.mem.tool_recall(
-            a.get("query", ""), _as_int(a.get("k", 8), 8))
+            a.get("query", a.get("text", a.get("q", a.get("value", "")))),
+            _as_int(a.get("k", 8), 8))
         out["memory_remember"] = lambda a: S.mem.tool_remember(
-            a.get("text", ""), a.get("kind", "fact"),
+            _mem_text(a), a.get("kind", "fact"),
             _as_float(a.get("salience", 0.5), 0.5))
         out["memory_forget"] = lambda a: S.mem.tool_forget(
-            a.get("query", a.get("id", "")))
+            a.get("query", a.get("id", a.get("text", a.get("value", "")))))
 
     if S.on("skills_enabled") and S.skl:
         # skill_write is registered by the HOST (kali.py), not here, so its

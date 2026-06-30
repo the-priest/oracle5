@@ -1,5 +1,52 @@
 # Changelog
 
+## v3.8.3 — Self-test bug sweep (6 fixes)
+
+Fixes from a full on-device self-test (62 tool calls, ThinkPad X395):
+
+- **skill_run no longer loses the skill name** (was "no skill named ''", blocked
+  ALL skill execution). The tool-call parser was unwrapping skill_run's legit
+  `args` field and throwing away `name`. Now it only unwraps a sole-key
+  `{arguments:{...}}` envelope, and never for skill_run.
+- **Browser self-heals after a closed session** (was TargetClosedError forever
+  on reuse). The worker now detects a dead page/context/browser and rebuilds it,
+  retrying the operation once instead of hammering the corpse.
+- **screenshot with save_path won't claim false success.** It was returning
+  ok:true on the tool's exit code without checking a file appeared. Every
+  capture path now verifies the file exists and is non-empty, and says so
+  honestly if nothing was written.
+- **memory_remember accepts the fields the model actually uses.** It only read
+  `text`; calls with `value`/`content`/`fact` or a `key`+`value` pair were
+  dropped as "empty". Now all are accepted (key+value become "key: value"), and
+  recall/forget take the same aliases. (The em-dash was never the problem.)
+- **web_verify corroboration recognises agreement, not just matching prose.**
+  Sources describing the same CVE in different words scored ~0.18 despite
+  agreeing. It now also compares high-signal anchors (CVE IDs, versions, scores,
+  acronyms) and takes the stronger signal — the regreSSHion case now scores ~0.9.
+- **analyze_image** error message now names the real path (Settings -> Display ->
+  Images & vision) and the providers that have vision (SiliconFlow Qwen2.5-VL,
+  Groq Llama vision). It was a config gap, not a code bug.
+
+---
+
+## v3.8.2 — Harder honesty: check before claiming
+
+- **She can't state machine facts from the air anymore.** The immutable
+  guardrail now mandates: never assert a checkable fact without checking it
+  first, and anything about your hardware or system state — RAM, disk, CPU, OS,
+  what's installed, what's running — is READ with a read-only tool, never
+  recalled or guessed. The "how much RAM do I have" case is called out by name:
+  she runs system_info and reports the real figure. Because the guardrail is
+  load-bearing and verified preserved on self-edits, she can't quietly drop this.
+- **system_info is now complete** — it returns real RAM, CPU model, core count,
+  OS, hostname, uptime and load, all read live, so one free call covers the
+  specs people actually ask about.
+- Verification section gains a dedicated machine/local-facts block, and
+  reinforces that confirmed-by-tool, inferred, and unknown are never blurred,
+  with anything unverified labelled out loud.
+
+---
+
 ## v3.8.1 — Voice de-paused, UI cleanup, identity fixed
 
 - **Voice no longer drags with long pauses.** Three fixes: newlines and blank

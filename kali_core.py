@@ -1643,6 +1643,21 @@ def tool_system_info() -> Dict[str, Any]:
     except Exception:
         pass
     try:
+        # CPU model + core count, read live so it's never guessed.
+        model = None
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.lower().startswith("model name") and ":" in line:
+                    model = line.split(":", 1)[1].strip()
+                    break
+                if line.startswith("Hardware") and ":" in line:  # ARM boards
+                    model = line.split(":", 1)[1].strip()
+        if model:
+            info["cpu"] = model
+        info["cpu_cores"] = os.cpu_count()
+    except Exception:
+        pass
+    try:
         with open("/proc/loadavg") as f:
             info["load"] = f.read().strip()
     except Exception:
@@ -2393,11 +2408,18 @@ def _screenshot_to(path: str, region: Optional[str] = None) -> Dict[str, Any]:
       • KDE any  → Spectacle as a fallback (handles compositor quirks)
     """
     sess = _session_type()
+
+    def _wrote() -> bool:
+        try:
+            return os.path.exists(path) and os.path.getsize(path) > 0
+        except Exception:
+            return False
+
     try:
         # Wayland: grim (full screen; region needs interactive slurp)
         if sess == "wayland" and _have("grim"):
             rc, _o, err = _ro(["grim", path], timeout=15)
-            if rc == 0:
+            if rc == 0 and _wrote():
                 return {"ok": True, "path": path, "tool": "grim"}
 
         # X11: scrot is fastest and supports an exact region rectangle
@@ -2408,7 +2430,7 @@ def _screenshot_to(path: str, region: Optional[str] = None) -> Dict[str, Any]:
             else:
                 argv = ["scrot", "-o", path]
             rc, _o, err = _ro(argv, timeout=15)
-            if rc == 0:
+            if rc == 0 and _wrote():
                 return {"ok": True, "path": path, "tool": "scrot"}
 
         # X11: ImageMagick import on the root window, optional crop
@@ -2423,19 +2445,24 @@ def _screenshot_to(path: str, region: Optional[str] = None) -> Dict[str, Any]:
                     pass
             argv.append(path)
             rc, _o, err = _ro(argv, timeout=15)
-            if rc == 0:
+            if rc == 0 and _wrote():
                 return {"ok": True, "path": path, "tool": "import"}
 
         # KDE: Spectacle in background full-screen mode (-b -f -n -o)
         if _have("spectacle"):
             rc, _o, err = _ro(
                 ["spectacle", "-b", "-n", "-f", "-o", path], timeout=20)
-            if rc == 0 and os.path.exists(path):
+            if rc == 0 and _wrote():
                 return {"ok": True, "path": path, "tool": "spectacle"}
 
-        return {"ok": False,
-                "error": f"no working screenshot tool for {sess} session "
-                         f"(tried grim/scrot/import/spectacle)"}
+        # A tool may have exited 0 but written nothing (the false-ok bug);
+        # say so honestly rather than returning a path with no file.
+        if not _wrote():
+            return {"ok": False,
+                    "error": f"screenshot tool ran but no file appeared at "
+                             f"{path} (session={sess}); tried "
+                             f"grim/scrot/import/spectacle"}
+        return {"ok": True, "path": path, "tool": "unknown"}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -2661,23 +2688,27 @@ class _BrowserWorker:
 
     def _run(self):
         pw = browser = page = None
+        _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+        def _new_browser():
+            try:
+                return pw.chromium.launch(headless=False)
+            except Exception:
+                return pw.chromium.launch(headless=True)
+
+        def _new_page(b):
+            ctx = b.new_context(user_agent=_UA,
+                                viewport={"width": 1280, "height": 800})
+            return ctx.new_page()
+
         try:
             from playwright.sync_api import sync_playwright
             pw = sync_playwright().start()
-            # Visible window so the operator can watch; fall back to headless
-            # if there's no display (or the GPU/sandbox refuses a window).
-            try:
-                browser = pw.chromium.launch(headless=False)
-            except Exception:
-                browser = pw.chromium.launch(headless=True)
-            ctx = browser.new_context(
-                user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
-                viewport={"width": 1280, "height": 800})
-            page = ctx.new_page()
+            browser = _new_browser()
+            page = _new_page(browser)
         except Exception as e:
             self._launch_err = f"browser launch failed: {type(e).__name__}: {e}"
-            # drain any queued ops with the launch error
             while True:
                 cmd = self._cmds.get()
                 if cmd is None:
@@ -2692,8 +2723,25 @@ class _BrowserWorker:
             try:
                 rq.put(fn(page))
             except Exception as e:
-                rq.put({"ok": False,
-                        "error": f"{type(e).__name__}: {str(e)[:240]}"})
+                msg = f"{type(e).__name__}: {str(e)}"
+                # Dead page / context / browser (TargetClosedError on reuse):
+                # the worker outlived the page behind it.  Rebuild and retry
+                # once so the browser self-heals instead of staying broken.
+                low = msg.lower()
+                if any(s in low for s in ("closed", "crash", "disconnect",
+                                          "no page", "target")):
+                    try:
+                        if browser is None or not browser.is_connected():
+                            browser = _new_browser()
+                        page = _new_page(browser)
+                        rq.put(fn(page))
+                        continue
+                    except Exception as e2:
+                        rq.put({"ok": False, "error":
+                                f"browser respawn failed: {type(e2).__name__}: "
+                                f"{str(e2)[:180]}"})
+                        continue
+                rq.put({"ok": False, "error": msg[:240]})
         try:
             browser.close()
             pw.stop()
@@ -3374,9 +3422,10 @@ def tool_analyze_image(image_path: str, question: str = "",
         return {"ok": False, "error": f"no such image: {p}"}
     if not (api_key and base_url and model):
         return {"ok": False,
-                "error": "vision not configured — set a vision_model and the "
-                         "API key for its provider (e.g. SiliconFlow) in "
-                         "Settings, then try again."}
+                "error": "vision not configured. In Settings -> Display -> "
+                         "Images & vision, pick a vision provider you hold a "
+                         "key for (SiliconFlow has Qwen2.5-VL; Groq has Llama "
+                         "vision) and set the vision model, then retry."}
     try:
         with open(p, "rb") as f:
             raw = f.read(13_000_000)
@@ -5347,10 +5396,13 @@ def parse_tool_calls(text: str) -> List[ToolCall]:
         # renders instead of being dropped as unknown.
         if name:
             name = _TOOL_NAME_ALIASES.get(str(name).strip().lower(), name)
-        # Unwrap common nested arg containers
-        if isinstance(parsed, dict):
+        # Unwrap common nested arg containers — but ONLY when the wrapper is
+        # the sole key (a genuine {"arguments": {...}} envelope).  skill_run
+        # legitimately takes BOTH name and args, so unwrapping its "args" here
+        # would throw away the skill name and yield "no skill named ''".
+        if isinstance(parsed, dict) and name != "skill_run":
             for inner_key in ("arguments", "args", "parameters", "params"):
-                if isinstance(parsed.get(inner_key), dict):
+                if isinstance(parsed.get(inner_key), dict) and len(parsed) == 1:
                     parsed = parsed[inner_key]
                     break
         # For the write path, accept the body under a few aliases too, so a
