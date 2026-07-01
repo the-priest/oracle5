@@ -4153,6 +4153,251 @@ def tool_remediation_hint(finding: Any) -> Dict[str, Any]:
         return {"ok": False, "error": f"remediation_hint failed: {e}"}
 
 
+def _current_engagement() -> str:
+    """The active engagement name, shared with the evidence ledger so scope,
+    graph, loot and evidence all file under the same case."""
+    try:
+        lg = get_ledger()
+        return lg.engagement if lg else "default"
+    except Exception:
+        return "default"
+
+
+def tool_scope_set(targets: Any, mode: str = "replace") -> Dict[str, Any]:
+    """Record the AUTHORISED scope for the current engagement — the hosts /
+    domains / CIDRs you have written permission to test. `mode` = replace | add.
+    This is the list scope_check enforces (fail-closed); keep it accurate."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.scope_set(targets, engagement=_current_engagement(),
+                              mode=(mode or "replace").strip().lower())
+    except Exception as e:
+        return {"ok": False, "error": f"scope_set failed: {e}"}
+
+
+def tool_scope_check(target: str) -> Dict[str, Any]:
+    """Is `target` within the current engagement's authorised scope? FAILS
+    CLOSED — unset scope, an unparseable target, or no match all report OUT of
+    scope. Consult before proposing any active command against a target."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.scope_check((target or "").strip(),
+                                engagement=_current_engagement())
+    except Exception as e:
+        return {"ok": False, "error": f"scope_check failed: {e}"}
+
+
+def tool_scope_show() -> Dict[str, Any]:
+    """Show the authorised scope recorded for the current engagement."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.scope_show(engagement=_current_engagement())
+    except Exception as e:
+        return {"ok": False, "error": f"scope_show failed: {e}"}
+
+
+def tool_asset_record(host: str, service: str = "", port: Any = None,
+                      finding: str = "", access: str = "",
+                      note: str = "") -> Dict[str, Any]:
+    """Add/update a host in the engagement graph. Any of service/port, finding,
+    access, or note extend the node. Idempotent. `access` records a foothold
+    (e.g. 'authenticated user', 'RCE as www-data')."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.asset_record(engagement=_current_engagement(),
+                                 host=(host or "").strip(), service=service,
+                                 port=port, finding=finding, access=access,
+                                 note=note)
+    except Exception as e:
+        return {"ok": False, "error": f"asset_record failed: {e}"}
+
+
+def tool_engagement_graph(host: str = "") -> Dict[str, Any]:
+    """Return the current engagement graph — every host with its services,
+    findings and access (or one host if given). Answers 'what do I know / where
+    do I have access / what's left'."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.graph_query(engagement=_current_engagement(),
+                                host=(host or "").strip())
+    except Exception as e:
+        return {"ok": False, "error": f"engagement_graph failed: {e}"}
+
+
+def tool_loot_record(host: str = "", kind: str = "credential", username: str = "",
+                     secret: str = "", service: str = "",
+                     note: str = "") -> Dict[str, Any]:
+    """Record a captured credential/hash/token for the engagement (stored
+    locally; the secret is REDACTED in every output). `kind` = credential |
+    hash | token | key. Ties loot to its host+service for reuse reasoning."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.loot_record(engagement=_current_engagement(),
+                                host=(host or "").strip(), kind=kind,
+                                username=username, secret=secret,
+                                service=service, note=note)
+    except Exception as e:
+        return {"ok": False, "error": f"loot_record failed: {e}"}
+
+
+def tool_loot_list() -> Dict[str, Any]:
+    """List loot captured this engagement, secrets redacted."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.loot_list(engagement=_current_engagement())
+    except Exception as e:
+        return {"ok": False, "error": f"loot_list failed: {e}"}
+
+
+def tool_loot_reuse() -> Dict[str, Any]:
+    """Suggest where captured credentials might be worth trying next: other
+    IN-SCOPE hosts running the same service. SUGGESTIONS for the operator — not
+    an automatic attack; every attempt still needs approval and a scope check."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.loot_reuse(engagement=_current_engagement())
+    except Exception as e:
+        return {"ok": False, "error": f"loot_reuse failed: {e}"}
+
+
+def tool_graph_ingest(parsed: Any) -> Dict[str, Any]:
+    """Populate the engagement graph from a parsed scan result (the dict from
+    parse_output / parse_scan, or a bare findings list). Turns what was
+    actually run into engagement state automatically — call it after parsing a
+    scan so the graph maintains itself. Pure state; runs nothing."""
+    try:
+        from kali_ext import engage as _eng
+    except Exception as e:
+        return {"ok": False, "error": f"engage module unavailable: {e}"}
+    try:
+        return _eng.graph_ingest(parsed, engagement=_current_engagement())
+    except Exception as e:
+        return {"ok": False, "error": f"graph_ingest failed: {e}"}
+
+
+def tool_sqlmap_plan(target: str = "", mode: str = "detect", data: str = "",
+                     cookie: str = "", headers: str = "", level: Any = 1,
+                     risk: Any = 1, dbms: str = "", technique: str = "",
+                     db: str = "", table: str = "", request_file: str = "",
+                     extra: str = "") -> Dict[str, Any]:
+    """Build a PROPOSED sqlmap command for an authorised target (mode = detect |
+    enumerate | dump). ENFORCES SCOPE: if the target is not in the engagement's
+    authorised scope, it refuses to build the command. sqlmap contains its own
+    engine; this constructs the parameterised call for the operator to approve
+    and run through the gate — it executes nothing, and it does not build
+    SQLi-to-RCE (--os-shell/--os-pwn)."""
+    try:
+        from kali_ext import pentest as _pentest
+    except Exception as e:
+        return {"ok": False, "error": f"pentest module unavailable: {e}"}
+    tgt = (target or "").strip()
+    # Scope enforcement — refuse to propose an active command against a target
+    # outside the recorded authorised scope. Skipped only when the target is a
+    # local request file with no host to check.
+    if tgt:
+        try:
+            from kali_ext import engage as _eng
+            chk = _eng.scope_check(tgt, engagement=_current_engagement())
+            if not chk.get("in_scope"):
+                return {"ok": False, "error": "target is OUT of authorised scope",
+                        "scope": chk,
+                        "hint": "add it with scope_set if you're authorised to "
+                                "test it; sqlmap will not be proposed otherwise."}
+        except Exception:
+            pass  # if scope can't be checked, fall through (builder still warns)
+    try:
+        return _pentest.sqlmap_plan(
+            target=tgt, mode=(mode or "detect").strip().lower(), data=data,
+            cookie=cookie, headers=headers, level=level, risk=risk, dbms=dbms,
+            technique=technique, db=db, table=table,
+            request_file=(request_file or "").strip(), extra=extra)
+    except Exception as e:
+        return {"ok": False, "error": f"sqlmap_plan failed: {e}"}
+
+
+def tool_benchmark_targets(target: str = "") -> Dict[str, Any]:
+    """List known-vulnerable practice targets and their ground-truth vuln sets
+    (or one target's full expected set). Shows what a perfect score looks like
+    before you score a run. Targets: juice-shop, dvwa, webgoat."""
+    try:
+        from kali_ext import bench as _bench
+    except Exception as e:
+        return {"ok": False, "error": f"bench module unavailable: {e}"}
+    try:
+        return _bench.benchmark_targets((target or "").strip().lower())
+    except Exception as e:
+        return {"ok": False, "error": f"benchmark_targets failed: {e}"}
+
+
+def tool_benchmark_score(target: str = "", findings: Any = None,
+                         ground_truth: Any = None, tool: str = "kali") -> Dict[str, Any]:
+    """Score a run's findings against a target's known vulnerabilities and
+    return an objective scorecard: precision, recall, F1, and per-class
+    coverage. `target` selects a built-in ground truth (juice-shop|dvwa|webgoat)
+    or pass your own `ground_truth` list. Missed classes are the real gaps."""
+    try:
+        from kali_ext import bench as _bench
+    except Exception as e:
+        return {"ok": False, "error": f"bench module unavailable: {e}"}
+    try:
+        return _bench.score_run((target or "").strip().lower(), findings,
+                                ground_truth=ground_truth,
+                                tool=(tool or "kali").strip())
+    except Exception as e:
+        return {"ok": False, "error": f"benchmark_score failed: {e}"}
+
+
+def tool_benchmark_report(scored: Any) -> Dict[str, Any]:
+    """Render a scored run (from benchmark_score) as a clean markdown scorecard —
+    comparison-ready numbers, what was covered, what was missed."""
+    try:
+        from kali_ext import bench as _bench
+    except Exception as e:
+        return {"ok": False, "error": f"bench module unavailable: {e}"}
+    try:
+        return _bench.benchmark_report(scored)
+    except Exception as e:
+        return {"ok": False, "error": f"benchmark_report failed: {e}"}
+
+
+def tool_benchmark_compare(runs: Any) -> Dict[str, Any]:
+    """Put several scored runs side by side (Kali vs another tool, or version N
+    vs N+1), ranked by F1 — so 'beats the best' is a sortable column, not an
+    assertion. `runs` is a list of benchmark_score results."""
+    try:
+        from kali_ext import bench as _bench
+    except Exception as e:
+        return {"ok": False, "error": f"bench module unavailable: {e}"}
+    try:
+        return _bench.compare_runs(runs)
+    except Exception as e:
+        return {"ok": False, "error": f"benchmark_compare failed: {e}"}
+
+
 # ═════════════════════════════════════════════════════════════════════
 # OSINT  — footprint / username discovery across public profile sites,
 #          plus platform-aware public readers.  Read-only; touches only

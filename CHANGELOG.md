@@ -1,5 +1,54 @@
 # Changelog
 
+## v4.2.0 — benchmarking: prove it with a number
+
+You can't out-benchmark the field on vibes. This release adds the instrument
+that turns "it's the best" into a measurable, reproducible score.
+
+- **Benchmark harness (new `kali_ext/bench.py`).** Four tools that score a run
+  objectively: `benchmark_targets` (the known vuln set of standard practice
+  targets — Juice Shop, DVWA, WebGoat — i.e. what a perfect score looks like);
+  `benchmark_score` (match a run's findings against that ground truth →
+  precision, recall, F1, per-class coverage; missed classes are the real gaps,
+  extras are possible false positives); `benchmark_report` (a clean markdown
+  scorecard); and `benchmark_compare` (rank several runs by F1 — Kali vs another
+  tool, or version vs version, so "beats the best" is a sortable column). Scores
+  by canonical vuln class via CWE and keyword matching, and honors an explicit
+  class a finding already carries.
+- **Coverage.** New suite `tests/test_bench.py` (26) covering the scoring math,
+  classification, report and comparison. The installer now verifies **14**
+  `kali_ext` modules.
+
+---
+
+## v4.1.1 — engagement state + operator loop
+
+Kali stops forgetting. This release adds the campaign-level brain that turns it
+from a tool that runs one-off commands into an operator that runs a whole job —
+plus scope enforcement and a scanner invocation builder.
+
+- **Engagement state (new `kali_ext/engage.py`).** Nine tools, all local and
+  propose/read-only: an authorised-**scope** allowlist with a `scope_check`
+  that FAILS CLOSED (unset scope / unparseable target / no match ⇒ out of
+  scope); an **asset graph** (`asset_record`, `engagement_graph`) that models
+  hosts, services, findings and footholds; a **loot** store (`loot_record`,
+  `loot_list`) with secrets redacted in all output; `loot_reuse` for
+  in-scope-only lateral-movement suggestions; and **`graph_ingest`**, which
+  turns parsed scan output straight into graph state so the picture maintains
+  itself from what was actually run.
+- **Scope enforcement on active work.** `sqlmap_plan` (below) refuses to build
+  a command for a target that isn't in the recorded authorised scope, and the
+  operator loop checks scope before anything active is proposed.
+- **`sqlmap_plan` — scanner invocation builder.** Constructs the correct,
+  parameterised sqlmap command (detect → enumerate → dump) for the operator to
+  approve and run through the gate. Injection-safe quoting; level/risk clamps;
+  it proposes, it never executes; and it deliberately does **not** build
+  SQLi-to-RCE (`--os-shell`/`--os-pwn`) — that trigger stays operator-driven.
+- **Coverage.** New suites `tests/test_engage.py` (25) and `tests/test_sqlmap.py`
+  (21). The installer now fetches and verifies **13** `kali_ext` modules.
+
+---
+
 ## v4.1.0 — code auditing, exploitation write-ups, silver theme
 
 The offensive workflow was strong on *live hosts*; this release adds the other

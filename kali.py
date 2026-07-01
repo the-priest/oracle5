@@ -51,6 +51,11 @@ from kali_core import (
     tool_nuclei_template, tool_reflect_findings,
     tool_attack_writeup, tool_code_tooling_check, tool_code_scan_plan,
     tool_parse_scan, tool_triage_findings, tool_remediation_hint,
+    tool_scope_set, tool_scope_check, tool_scope_show, tool_asset_record,
+    tool_engagement_graph, tool_loot_record, tool_loot_list, tool_loot_reuse,
+    tool_graph_ingest, tool_sqlmap_plan,
+    tool_benchmark_targets, tool_benchmark_score, tool_benchmark_report,
+    tool_benchmark_compare,
     tool_osint_username, tool_osint_lookup, tool_social_read,
     quick_facts as tool_quick_facts,
     sudo_cached, detect_urgency, looks_degraded,
@@ -79,7 +84,7 @@ except Exception as _ve:  # noqa
 
 APP_ID  = "org.thepriest.kali"
 APP_NAME = "Kali"
-VERSION = "4.1.0"
+VERSION = "4.2.0"
 
 # ── Tool-chain efficiency knobs ──
 # How many model round-trips a single user turn may chain through.  With
@@ -4519,6 +4524,20 @@ class MainWindow(Adw.ApplicationWindow):
         "parse_scan":         "parsing scanner output",
         "triage_findings":    "triaging findings",
         "remediation_hint":   "looking up the fix",
+        "scope_set":          "recording authorised scope",
+        "scope_check":        "checking scope",
+        "scope_show":         "showing scope",
+        "asset_record":       "updating the engagement graph",
+        "engagement_graph":   "reading the engagement graph",
+        "loot_record":        "recording loot",
+        "loot_list":          "listing loot",
+        "loot_reuse":         "checking credential reuse",
+        "graph_ingest":       "updating the engagement graph",
+        "sqlmap_plan":        "building the sqlmap command",
+        "benchmark_targets":  "loading benchmark targets",
+        "benchmark_score":    "scoring the run",
+        "benchmark_report":   "building the scorecard",
+        "benchmark_compare":  "comparing runs",
         "read_file":        "reading a file",
         "write_file":       "writing a file",
         "list_dir":         "listing files",
@@ -5023,6 +5042,57 @@ class MainWindow(Adw.ApplicationWindow):
         if n == "remediation_hint":
             return lambda: tool_remediation_hint(
                 a.get("finding", a.get("item", a)))
+        # ── Engagement state: scope allowlist, asset graph, loot (read/record;
+        # scope_check is the authorisation boundary, fails closed) ──
+        if n == "scope_set":
+            return lambda: tool_scope_set(
+                a.get("targets", a.get("scope", a.get("hosts", []))),
+                a.get("mode", "replace"))
+        if n == "scope_check":
+            return lambda: tool_scope_check(
+                a.get("target", a.get("host", a.get("url", ""))))
+        if n == "scope_show":
+            return lambda: tool_scope_show()
+        if n == "asset_record":
+            return lambda: tool_asset_record(
+                a.get("host", a.get("target", "")), a.get("service", ""),
+                a.get("port", None), a.get("finding", ""),
+                a.get("access", ""), a.get("note", ""))
+        if n == "engagement_graph":
+            return lambda: tool_engagement_graph(a.get("host", ""))
+        if n == "loot_record":
+            return lambda: tool_loot_record(
+                a.get("host", ""), a.get("kind", "credential"),
+                a.get("username", a.get("user", "")),
+                a.get("secret", a.get("password", a.get("hash", ""))),
+                a.get("service", ""), a.get("note", ""))
+        if n == "loot_list":
+            return lambda: tool_loot_list()
+        if n == "loot_reuse":
+            return lambda: tool_loot_reuse()
+        if n == "graph_ingest":
+            return lambda: tool_graph_ingest(
+                a.get("parsed", a.get("findings", a.get("result", a))))
+        if n == "sqlmap_plan":
+            return lambda: tool_sqlmap_plan(
+                a.get("target", a.get("url", a.get("host", ""))),
+                a.get("mode", "detect"), a.get("data", ""), a.get("cookie", ""),
+                a.get("headers", ""), a.get("level", 1), a.get("risk", 1),
+                a.get("dbms", ""), a.get("technique", ""), a.get("db", ""),
+                a.get("table", ""), a.get("request_file", a.get("r", "")),
+                a.get("extra", ""))
+        if n == "benchmark_targets":
+            return lambda: tool_benchmark_targets(a.get("target", ""))
+        if n == "benchmark_score":
+            return lambda: tool_benchmark_score(
+                a.get("target", ""), a.get("findings", a.get("items", [])),
+                a.get("ground_truth", a.get("gt", None)), a.get("tool", "kali"))
+        if n == "benchmark_report":
+            return lambda: tool_benchmark_report(
+                a.get("scored", a.get("result", a)))
+        if n == "benchmark_compare":
+            return lambda: tool_benchmark_compare(
+                a.get("runs", a.get("results", a.get("items", []))))
         # Pure system / desktop sensing (independent subprocesses).
         if n == "system_info":
             return tool_system_info
@@ -5435,6 +5505,54 @@ class MainWindow(Adw.ApplicationWindow):
             "remediation_hint":   lambda a: self._tool_simple(
                 lambda: tool_remediation_hint(
                     a.get("finding", a.get("item", a)))),
+            "scope_set":          lambda a: self._tool_simple(
+                lambda: tool_scope_set(
+                    a.get("targets", a.get("scope", a.get("hosts", []))),
+                    a.get("mode", "replace"))),
+            "scope_check":        lambda a: self._tool_simple(
+                lambda: tool_scope_check(
+                    a.get("target", a.get("host", a.get("url", ""))))),
+            "scope_show":         lambda a: self._tool_simple(
+                lambda: tool_scope_show()),
+            "asset_record":       lambda a: self._tool_simple(
+                lambda: tool_asset_record(
+                    a.get("host", a.get("target", "")), a.get("service", ""),
+                    a.get("port", None), a.get("finding", ""),
+                    a.get("access", ""), a.get("note", ""))),
+            "engagement_graph":   lambda a: self._tool_simple(
+                lambda: tool_engagement_graph(a.get("host", ""))),
+            "loot_record":        lambda a: self._tool_simple(
+                lambda: tool_loot_record(
+                    a.get("host", ""), a.get("kind", "credential"),
+                    a.get("username", a.get("user", "")),
+                    a.get("secret", a.get("password", a.get("hash", ""))),
+                    a.get("service", ""), a.get("note", ""))),
+            "loot_list":          lambda a: self._tool_simple(
+                lambda: tool_loot_list()),
+            "loot_reuse":         lambda a: self._tool_simple(
+                lambda: tool_loot_reuse()),
+            "graph_ingest":       lambda a: self._tool_simple(
+                lambda: tool_graph_ingest(
+                    a.get("parsed", a.get("findings", a.get("result", a))))),
+            "sqlmap_plan":        lambda a: self._tool_simple(
+                lambda: tool_sqlmap_plan(
+                    a.get("target", a.get("url", a.get("host", ""))),
+                    a.get("mode", "detect"), a.get("data", ""), a.get("cookie", ""),
+                    a.get("headers", ""), a.get("level", 1), a.get("risk", 1),
+                    a.get("dbms", ""), a.get("technique", ""), a.get("db", ""),
+                    a.get("table", ""), a.get("request_file", a.get("r", "")),
+                    a.get("extra", ""))),
+            "benchmark_targets":  lambda a: self._tool_simple(
+                lambda: tool_benchmark_targets(a.get("target", ""))),
+            "benchmark_score":    lambda a: self._tool_simple(
+                lambda: tool_benchmark_score(
+                    a.get("target", ""), a.get("findings", a.get("items", [])),
+                    a.get("ground_truth", a.get("gt", None)), a.get("tool", "kali"))),
+            "benchmark_report":   lambda a: self._tool_simple(
+                lambda: tool_benchmark_report(a.get("scored", a.get("result", a)))),
+            "benchmark_compare":  lambda a: self._tool_simple(
+                lambda: tool_benchmark_compare(
+                    a.get("runs", a.get("results", a.get("items", []))))),
         }
         # Merge sidecar tools (memory_*, skill_list, skill_run).  Returns an
         # empty dict unless the matching feature is enabled, so stock Kali is

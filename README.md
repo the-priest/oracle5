@@ -25,7 +25,7 @@ keywords: ai security operator, kali linux ai, ai pentest tool, offensive securi
 
 <br>
 
-![version](https://img.shields.io/badge/version-4.1.0-c4cad4?style=for-the-badge&labelColor=0d0f12)
+![version](https://img.shields.io/badge/version-4.2.0-c4cad4?style=for-the-badge&labelColor=0d0f12)
 ![license](https://img.shields.io/badge/license-MIT-2ee65f?style=for-the-badge&labelColor=0d0f12)
 ![platform](https://img.shields.io/badge/Linux-X11%20%7C%20Wayland-9aa4b2?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d0f12)
 ![python](https://img.shields.io/badge/python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white&labelColor=0d0f12)
@@ -82,7 +82,7 @@ Where a hosted assistant refuses half of real security work and ships every prom
 Kali isn't a single-trick tool. It's one app that covers a security operator's whole day. Here's what that looks like in practice.
 
 ### 🎯 Run a penetration test, end to end
-Point Kali at an authorized target and walk the full engagement without leaving the window. It inventories your installed tooling, builds an **ordered recon plan** (passive first, then active), proposes each command for you to approve, parses the raw output into clean findings, and **auto-ranks the CVEs by what's actually being exploited in the wild** (NVD + CISA KEV + EPSS). When you get in, it writes the **reproducible "how we got in" report section straight from the evidence ledger** — backed by the real hashed commands that ran, not a freeform retelling. Every step is recorded to a tamper-evident trail you can hand to the client as proof of work.
+Point Kali at an authorized target and walk the full engagement without leaving the window. It inventories your installed tooling, builds an **ordered recon plan** (passive first, then active), proposes each command for you to approve, parses the raw output into clean findings, and **auto-ranks the CVEs by what's actually being exploited in the wild** (NVD + CISA KEV + EPSS). When you get in, it writes the **reproducible "how we got in" report section straight from the evidence ledger** — backed by the real hashed commands that ran, not a freeform retelling. It can **benchmark itself** against known-vulnerable practice targets (Juice Shop, DVWA, WebGoat) and score the run — precision, recall, coverage — so its performance is a reproducible number you can put next to any other tool's. It maintains a live **engagement graph** (hosts, services, footholds) that populates itself from the scans it runs, enforces your authorised **scope** before touching a target, and records everything to a tamper-evident trail you can hand to the client as proof of work.
 
 ### 🔍 Audit your own code and dependencies
 Give it a repo. It detects the languages, lockfiles and IaC, then drives the industry-standard scanners — **Semgrep, Bandit, gitleaks, OSV-Scanner, Trivy, pip-audit, `npm audit`** — and does the part those tools *don't*: it **normalizes ten scanners into one finding list and triages across them**, so two tools flagging the same issue collapse into one *corroborated* finding, the weak ones get flagged for review, and you get a clean, prioritized list with concrete fixes instead of ten different JSON dumps.
@@ -252,7 +252,7 @@ curl -fsSL https://raw.githubusercontent.com/the-priest/oracle5/main/install.sh 
 Run it once to install; run the **exact same line** any time to update. The installer is idempotent and genuinely careful — it treats your machine the way you'd want it treated:
 
 - 🐍 Detects **Python 3.10+** and installs **GTK4 + libadwaita** (apt / pacman / dnf, auto-detected).
-- 📦 Fetches the core modules **plus** the optional `kali_ext/` sidecar — and **verifies every one of the 12 sidecar modules arrived**, retrying any that didn't, refusing to install a half-broken update over a working one.
+- 📦 Fetches the core modules **plus** the optional `kali_ext/` sidecar — and **verifies every one of the 14 sidecar modules arrived**, retrying any that didn't, refusing to install a half-broken update over a working one.
 - 🛟 **Parse-checks every incoming file before it overwrites anything** — a corrupted download can't replace your working install.
 - 💾 **Backs up your chat database** before each update and reports the version move.
 - 🧩 Installs optional desktop helpers, voice packages, and optionally Playwright + Chromium.
@@ -316,7 +316,7 @@ Keys live only in `~/.config/kali/settings.json` — they never go anywhere but 
       ┌─────────┴────────┐   ┌──────────┴───────┐   ┌──────────────┐
       │  kali_core.py    │   │  kali_persona.py │   │ kali_voice.py│
       │ providers/router │   │ system prompt    │   │ STT + TTS    │
-      │ 65+ agent tools  │   │ + immutable      │   │ (provider-   │
+      │ 75+ agent tools  │   │ + immutable      │   │ (provider-   │
       │ web · github     │   │   guardrail      │   │  aware ASR)  │
       │ brave · chat DB  │   └──────────────────┘   └──────────────┘
       └──┬────────┬───┬──┘
@@ -329,9 +329,9 @@ Keys live only in `~/.config/kali/settings.json` — they never go anywhere but 
    └─────────┘
          │
    ┌─────┴───────────────────────────────────────────────────────┐
-   │  kali_ext/  (optional sidecar — off by default, 12 modules)  │
+   │  kali_ext/  (optional sidecar — off by default, 14 modules)  │
    │  memory · skills · sandbox · foresight · mcp · verify ·       │
-   │  worker · headroom · pentest · codescan                      │
+   │  worker · headroom · pentest · codescan · engage · bench                      │
    └─────────────────────────────────────────────────────────────┘
 ```
 

@@ -107,7 +107,7 @@ OPTIONAL_FILES=(org.thepriest.kali.svg kali-dragon.svg kali-watermark.png kali-c
 # kali_ext sidecar modules — fetched in remote (curl|bash) mode so phones
 # and fresh boxes get the full toolset (headroom / verify / pentest plus the
 # memory/skills/foresight extensions), not just the core four files.
-EXT_FILES=(__init__.py codescan.py extman.py foresight.py headroom.py memory.py mcp.py \
+EXT_FILES=(__init__.py bench.py codescan.py engage.py extman.py foresight.py headroom.py memory.py mcp.py \
            pentest.py sandbox.py skills.py verify.py worker.py)
 GITHUB_REPO="${KALI_REPO:-the-priest/oracle5}"
 GITHUB_BRANCH="${KALI_BRANCH:-main}"

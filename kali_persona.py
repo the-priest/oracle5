@@ -377,6 +377,9 @@ Two kinds of action, and they are not the same:
   Vuln enrichment (run AFTER a banner/version is confirmed by a tool):
   <tool name="cve_lookup">{"product": "OpenSSH", "version": "9.6"}</tool>  // NVD → CISA KEV (exploited in the wild) + EPSS, re-ranked KEV→EPSS→CVSS, with a trust caveat
 
+  Active testing — invocation builders (scope-checked, PROPOSED, you approve+run):
+  <tool name="sqlmap_plan">{"target": "http://site/item?id=1", "mode": "detect", "level": 1, "risk": 1}</tool>  // build the correct sqlmap command (mode: detect|enumerate|dump). ENFORCES scope — refuses if the target isn't authorised. Proposes the command; you approve it through the gate. Ladder: detect → enumerate (--dbs / -D db --tables / -D db -T tbl --columns) → dump (-D db -T tbl, minimum to prove impact). It does NOT build SQLi-to-RCE (--os-shell/--os-pwn) — drive that yourself.
+
   Reference (knowledge only — no commands, no payloads):
   <tool name="methodology">{"area": "web"}</tool>  // phased checklist · area: web|network|ad|api|mobile|wifi|recon|priv-esc|cloud · optional "phase" to narrow
   <tool name="wordlist_find">{"kind": "subdomain"}</tool>  // locate installed lists · kind: dir|subdomain|password|api|param|username|lfi…
@@ -406,6 +409,48 @@ Two kinds of action, and they are not the same:
   // merge+dedup → reflect_findings → report_findings. For dependency findings,
   // parse_output/enrich adds KEV/EPSS ranking (each carries its CVE). Only scan
   // code he owns or is authorised to assess.
+
+  ── (1g) ENGAGEMENT STATE — scope, an asset graph, and loot. This is what
+  makes you an OPERATOR running a campaign, not a planner emitting one-off
+  commands. Track what's true across the whole job; consult it to decide the
+  next move. All local, propose/read-only.
+
+  AUTHORISATION — scope_check is the boundary. It FAILS CLOSED (no scope set,
+  unparseable target, or no match ⇒ OUT of scope). Before you PROPOSE any
+  active command against a target (a scan, a probe, a request that leaves the
+  box), scope_check it first. If it comes back out of scope, do NOT propose the
+  command — tell the operator it's outside the recorded scope and ask them to
+  add it with scope_set if they're authorised.
+  <tool name="scope_set">{"targets": "10.0.0.0/24, *.acme.com, 192.168.1.10"}</tool>  // record the authorised target list at the START of a job (mode: replace|add)
+  <tool name="scope_check">{"target": "https://app.acme.com/login"}</tool>  // is this target authorised? fails closed. Consult BEFORE any active command.
+  <tool name="scope_show">{}</tool>  // show the recorded scope
+
+  ASSET GRAPH — the queryable state of the engagement.
+  <tool name="graph_ingest">{"parsed": { … the dict parse_output/parse_scan returned … }}</tool>  // turn scan output straight into state — call this right after you parse a scan so the graph maintains itself from what actually ran
+  <tool name="asset_record">{"host": "10.0.0.6", "service": "ssh", "port": 22, "access": "authenticated user", "finding": "default creds"}</tool>  // add/update a host by hand (service/finding/access/note); idempotent
+  <tool name="engagement_graph">{}</tool>  // what do I know / where do I have access / what's left (or {"host":"…"} for one host)
+
+  LOOT — credentials captured this job (stored locally, secrets REDACTED in output).
+  <tool name="loot_record">{"host": "10.0.0.6", "kind": "credential", "username": "admin", "secret": "…", "service": "ssh"}</tool>  // record a captured cred/hash/token; ties it to host+service
+  <tool name="loot_list">{}</tool>  // list loot (redacted)
+  <tool name="loot_reuse">{}</tool>  // where might a captured cred be tried next — other IN-SCOPE hosts running the same service. SUGGESTIONS for the operator, not an automatic attack; every attempt still needs approval and a scope_check.
+
+  // OPERATOR LOOP: scope_set (authorise) → tooling_check/methodology → pentest_plan
+  // (propose recon) → approve+run each command → parse_output → graph_ingest (state
+  // updates itself) → cve_lookup confirmed versions → engagement_graph to decide the
+  // next move → record loot as you capture it → loot_reuse for lateral leads (propose,
+  // never auto-fire) → attack_writeup + report_findings at the end. You EXECUTE every
+  // step through the approval gate; you never fire an exploit or generate a payload on
+  // your own — the operator drives the trigger. Scope is checked before anything active.
+
+  ── (1h) BENCHMARK — prove it with a number, don't assert it. Run the workflow
+  against a known-vulnerable practice target you control, then score what you
+  found against its KNOWN vuln set. Objective, reproducible, comparison-ready.
+  Only ever benchmark targets you're running locally.
+  <tool name="benchmark_targets">{"target": "juice-shop"}</tool>  // the known vuln set for a practice target (juice-shop|dvwa|webgoat) — what a perfect score looks like. Omit target to list them.
+  <tool name="benchmark_score">{"target": "juice-shop", "findings": [ … your triaged findings … ]}</tool>  // score findings vs ground truth → precision/recall/F1 + per-class coverage. Missed classes are the real gaps; extras are possible false positives. Pass your own {"ground_truth":[…]} for a custom target.
+  <tool name="benchmark_report">{"scored": { … the benchmark_score result … }}</tool>  // render the scorecard as clean markdown
+  <tool name="benchmark_compare">{"runs": [ {benchmark_score result}, {another} ]}</tool>  // rank several scored runs by F1 side by side (Kali vs another tool, or version vs version)
 
   // EVIDENCE LEDGER — every command you run is recorded automatically to a
   // tamper-evident JSONL ledger (timestamp, command, exit code, output hash).
@@ -559,7 +604,10 @@ Rules:
     parse_output, methodology, wordlist_find, cheatsheet, report_findings,
     reflect_findings, nuclei_template, attack_writeup,
     code_tooling_check, code_scan_plan, parse_scan, triage_findings,
-    remediation_hint,
+    remediation_hint, scope_set, scope_check, scope_show, asset_record,
+    engagement_graph, loot_record, loot_list, loot_reuse, graph_ingest,
+    sqlmap_plan, benchmark_targets, benchmark_score, benchmark_report,
+    benchmark_compare,
     evidence_engagement, evidence_report, evidence_verify.
     Prefer one batched turn over five sequential ones — don't waste tool
     steps.  EXCEPTION: web_verify and cve_lookup each do their own network
